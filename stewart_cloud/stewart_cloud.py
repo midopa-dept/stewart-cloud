@@ -97,7 +97,7 @@ HOME_DIR = SITE["home"]
 KEYCHAIN = HOME_DIR + "/Library/Keychains/login.keychain-db"
 CONFIG = PREFIX + "/config.json"
 RECORD_DIR = SITE["record_dir"]
-GUIDE = "README.md 의 '키 준비'"
+GUIDE = "README.md 의 '5. 키'"
 PROG = "stewart-cloud"
 
 # T27 publish(아래 '묶음 올리기' 절)
