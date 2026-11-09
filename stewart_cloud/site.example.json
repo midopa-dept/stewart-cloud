@@ -1,0 +1,7 @@
+{
+ "user": "<로그인 사용자 이름>",
+ "home": "<홈 폴더 절대 경로>",
+ "record_dir": "<홈>/.cache/stewart-cloud",
+ "repo_git": "<홈>/src/stewart-cloud/.git",
+ "bundle_dir": "<홈>/.local/share/stewart-cloud/bundles"
+}

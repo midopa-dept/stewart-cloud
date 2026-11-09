@@ -1,0 +1,46 @@
+# /etc/systemd/system/modelpush.service — 보관 서버 → 파드 모델 밀어 넣기. install.sh 가 깐다.
+# 데몬은 catalog 를 읽기만(ReadOnlyPaths), incoming 만 쓸 수 있다. 네트워크는 테일넷(100.64.0.0/10·fd7a:115c:a1e0::/48)과
+# resolved 의 DNS 창구(127.0.0.53, MagicDNS 이름 풀기)만. catalog 쓰기는 promote(일회 유닛, modelstore 감싸개) 때만 열린다.
+[Unit]
+Description=stewart modelpush (보관 서버가 먼저 연결해 파드에 모델을 밀어 넣는다)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+# 보관소는 16TB btrfs @models(/srv/models, fstab nofail). 마운트가 빠지면 이 유닛은 뜨지 않는다(닫힌 채 실패,
+# 이유는 systemctl status 의 의존 실패로 보인다) — 빈 루트 디스크의 /srv/models 를 보관소로 쓰지 않게.
+RequiresMountsFor=/srv/models
+
+[Service]
+Type=simple
+User=modelpush
+Group=modelpush
+ExecStart=/usr/bin/python3 -I /opt/modelstore/modelpush.py --config /etc/modelstore/config.json daemon
+Restart=on-failure
+RestartSec=30
+UMask=0027
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ReadOnlyPaths=/srv/models/catalog
+ReadWritePaths=/srv/models/incoming
+IPAddressDeny=any
+IPAddressAllow=100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.53/32
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

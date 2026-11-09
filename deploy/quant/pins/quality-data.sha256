@@ -1,0 +1,4 @@
+# bench/quality_battery.py 가 읽는 3개(v6 pod-start 의 Q_SHA 와 같다)
+5f1bea067869d04849c0f975a2b29c4ff47d867f484f5010ea5e861eab246d91  wikitext/wikitext-2-raw-v1/test-00000-of-00001.parquet
+ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59  gsm8k/main/test-00000-of-00001.parquet
+808a5126898c11f5da89bfb35f66dbee67d69544fe5a7d4f9903370d7af5259d  fineweb2/data/dan_Latn/test/000_00000.parquet

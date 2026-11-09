@@ -1,0 +1,39 @@
+#!/bin/bash
+# /usr/local/sbin/modelstore — 사람이 sudo 로 부르는 감싸개. 명령마다 일회 systemd 유닛을 modelpush 계정으로 띄워
+# 쓸 수 있는 곳·네트워크를 가른다:
+#   pull    : incoming 쓰기, catalog 읽기, 테일넷만
+#   promote : catalog 쓰기, incoming 읽기, 네트워크 없음      ← catalog 를 쓸 수 있는 유일한 길
+#   list    : 모두 읽기, 네트워크 없음
+#   push-once / status : 데몬 한 바퀴 손으로 / 데몬 상태
+# 인자는 셸을 거치지 않고 그대로 modelpush.py 에 넘어간다(꼴 검사는 modelpush.py 가 한다).
+set -euo pipefail
+PY=/usr/bin/python3
+APP=/opt/modelstore/modelpush.py
+CONF=/etc/modelstore/config.json
+ROOT=/srv/models
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+# 일회 유닛도 /srv/models 마운트를 요구한다(빠져 있으면 띄우지 않는다)
+base=(--uid=modelpush --gid=modelpush --wait --pipe --collect --quiet -p RequiresMountsFor=$ROOT
+      -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p NoNewPrivileges=yes -p UMask=0027
+      -p "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX" -p CapabilityBoundingSet=)
+case "$cmd" in
+  pull)
+    exec systemd-run "${base[@]}" -p ReadWritePaths=$ROOT/incoming -p ReadOnlyPaths=$ROOT/catalog \
+      -p IPAddressDeny=any -p "IPAddressAllow=100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.53/32" \
+      $PY -I $APP --config $CONF pull "$@" ;;
+  promote)
+    exec systemd-run "${base[@]}" -p ReadWritePaths=$ROOT/catalog -p ReadOnlyPaths=$ROOT/incoming -p IPAddressDeny=any \
+      $PY -I $APP --config $CONF promote "$@" ;;
+  list)
+    exec systemd-run "${base[@]}" -p ReadOnlyPaths=$ROOT -p IPAddressDeny=any $PY -I $APP --config $CONF list ;;
+  push-once)
+    exec systemd-run "${base[@]}" -p ReadOnlyPaths=$ROOT/catalog -p ReadWritePaths=$ROOT/incoming \
+      -p IPAddressDeny=any -p "IPAddressAllow=100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.53/32" \
+      $PY -I $APP --config $CONF push-once ;;
+  status)
+    exec systemctl status --no-pager modelpush.service ;;
+  *)
+    echo "쓰는 법: sudo modelstore pull <호스트> | promote <incoming 폴더> <별칭> | list | push-once | status" >&2
+    exit 2 ;;
+esac

@@ -1,0 +1,23 @@
+{
+ "gpu_name": "RTX 3090",
+ "cuda_max_good_min": 13.0,
+ "reliability_min": 0.95,
+ "datacenter": true,
+ "verified": true,
+ "label_prefix": "stewart-",
+ "logout_port": 8001,
+ "band_dph": 0.02,
+ "offers_shown": 5,
+ "eval_total_max_dph": 6.00,
+ "roles": {
+  "serve": {"num_gpus_min": 1, "num_gpus_max": 1, "max_dph": 0.60, "disk": 60,
+            "ts_name": "stewart-gpu.tail-example.ts.net"},
+  "eval": {"num_gpus_min": 4, "num_gpus_max": 8, "max_dph": 6.00, "disk": 80, "cpu_ram_gb_per_gpu_min": 12,
+           "ts_name": "stewart-gpu-eval.tail-example.ts.net"},
+  "eval2": {"ts_name": "stewart-gpu-eval2.tail-example.ts.net"},
+  "quant": {"num_gpus_min": 1, "num_gpus_max": 1, "max_dph": 1.60, "disk": 250,
+            "ts_name": "stewart-quant.tail-example.ts.net", "datacenter": false,
+                       "gpu_names": ["A100 SXM4", "A100 PCIE", "A100X", "H100 SXM", "H100 PCIE", "H100 NVL"],
+            "gpu_ram_gb_min": 79, "cpu_ram_gb_min": 128, "cpu_cores_min": 16, "inet_down_min": 1000}
+ }
+}

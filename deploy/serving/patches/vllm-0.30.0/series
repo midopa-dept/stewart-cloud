@@ -1,0 +1,12 @@
+qwen3_5-embed-quant.patch
+qwen3_5-mtp-draft-vocab.patch
+vllm-pr50021-gdn-spec-bounds.patch
+sampler-small-topk-fast-softmax.patch
+speed-knobs-envs.patch
+mamba-align-checkpoint-order.patch
+mamba-chunked-prefill-align.patch
+engine-completion-log.patch
+engine-stall-sentinel.patch
+topk-honour-flashinfer-sampler-switch.patch
+memory-profile-after-warmup.patch
+cudagraph-memory-from-allocator.patch

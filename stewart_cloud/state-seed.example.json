@@ -1,0 +1,11 @@
+{
+ "v": 1,
+ "current": {"pod": "<콘솔에서 만든 pod 템플릿 hash_id>"},
+ "templates": {
+  "<콘솔에서 만든 pod 템플릿 hash_id>": {
+   "kind": "pod", "bundle": "v1", "commit": null,
+   "ps": "<묶음 sha256 64자>", "sb_sha": "<boot.sb.txt 의 sha256>", "args_sha": "<args.txt 의 sha256>",
+   "image": null, "source": "console", "ts": "2026-01-01T00:00:00+00:00", "base": null
+  }
+ }
+}

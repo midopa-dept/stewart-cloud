@@ -1,0 +1,17 @@
+{
+  "root": "/srv/models",
+  "hosts": ["stewart-gpu.tail-example.ts.net", "stewart-gpu-eval.tail-example.ts.net", "stewart-quant.tail-example.ts.net"],
+  "port": 8090,
+  "interval_s": 30,
+  "http_timeout_s": 15,
+  "min_rate_Bps": 5000000,
+  "max_total_bytes": 200000000000,
+  "thresholds": {
+    "pad_mean_kl_max": 0.0001,
+    "pad_top1_min": 0.999,
+    "quant_mean_kl_max": 0.1,
+    "quant_top1_min": 0.85,
+    "require_verify": true,
+    "require_quality": true
+  }
+}

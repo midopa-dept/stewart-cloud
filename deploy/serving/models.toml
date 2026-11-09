@@ -1,0 +1,70 @@
+# stewart 서빙 모델 표(공개). pod-start 는 설정 파일(CF)의 MODEL=<별칭> 으로 한 줄을 고른다.
+# 같은 폴더의 models.local.toml 이 있으면 serving.py 가 합쳐 읽는다: 별칭·계획·이미지는 겹치면 안 되고,
+# default 는 local 것이 이기며, home 칸은 local 이 더한다(server_ip 는 local 에만 둔다). local 이 없어도 돈다.
+# 주소·리비전·파일 sha 는 표와 pins/ 에서만 온다(CF 는 별칭·어댑터 이름만 고를 수 있다). 칸 뜻은 README.md.
+schema = 1
+default = "qwen38-27b-orig-w4a16q"
+
+# 모델 출처: 별칭마다 source = "hf"(HF 고정 리비전 + pins) | "home"(보관 서버가 파드로 밀어 넣음, files 에 이름·sha256·크기 전부).
+# home 은 파드가 :recv_port 받는 창구(modelrecv.py)를 열고 기다린다. 파드 → 집 연결은 없다.
+[home]
+recv_port = 8090
+recv_timeout_min = 60      # 이 안에 다 못 받으면 HALT + 인스턴스 정지
+
+# ---- 이미지: 어댑터가 도는 바탕. 템플릿의 이미지 칸과 같아야 한다 ----
+[images.hyperqwen-8cf642e]
+ref = "ghcr.io/syv-ai/hyperqwen:sha-8cf642e@sha256:65f399a18b42af0b72fd9f69c50aab1464979a9730d65e1909f83059c9ab2d47"
+vllm = "0.30.0"
+python = "/app/venv/bin/python"
+note = "HyperQwen 8cf642e(vLLM 0.30.0 + 패치 44 + KVarN)"
+
+[images."vllm-openai-0.30.0"]
+ref = "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"   # 여러 아키텍처 index digest(내용 주소라 그 안의 amd64 manifest 도 고정된다)
+vllm = "0.30.0"
+python = "python3"
+note = "공식 vLLM 0.30.0. nvcc 유무는 조회 결과로(없으면 CTX=long 의 FlashInfer fp8 KV JIT 가 안 된다)"
+
+# ---- 원본 Qwen3.8-27B 의 우리 조리법 W4A16(int8 head 판). 채팅 템플릿은 원본 11-07 커밋 전 판(templates/)으로 고정 ----
+[models.qwen38-27b-orig-w4a16q]
+source = "home"
+pending = true          # 변환·promote 전: 고를 수 없다. promote 가 찍은 files 를 붙이고 이 줄을 뺀다
+dir = "Qwen3.8-27B-W4A16-AutoRound-int8h"
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체 + int8 lm_head·임베딩·MTP + draft head 40,960(deploy/quant 조리법, int8h 세트)"
+served_name = "qwen3.8-27b"
+adapters = ["hyperqwen-8cf642e", "vllm-patched"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+
+[models.qwen38-27b-orig-w4a16q.quant_src]   # deploy/quant 변환 대상(run-convert.sh 가 order 차례로). pins 는 deploy/quant 기준
+repo = "Qwen/Qwen3.8-27B"
+rev = "37561816e66b5b9153b1b64c10968c18c1e6f4a0"
+pins = "pins/qwen38-27b-orig-bf16.sha256"
+pad_to = 0
+order = 1
+
+[models.qwen38-27b-orig-w4a16q.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+
+[models.qwen38-27b-orig-w4a16q.hyperqwen]
+CTX = "long"
+SPEC = "mtp"

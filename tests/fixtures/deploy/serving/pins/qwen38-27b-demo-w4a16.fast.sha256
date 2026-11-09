@@ -1,0 +1,6 @@
+# syvai/qwen3.8-27b-3090-fast-variant@124c14e7e8c7d2f5402933b9af368e772a9fcf0c — prepare 가 쓰는 5개(v6 에서 옮김)
+5a3e7312dee3a6c5909beb854b05ac818be836683730e4facba81f547b77fd62  config.json
+ac4511ddfbdcd8399dffee570c31708c13f974a18e46d3c337ca652a46a1a437  model-00007-of-00007.safetensors
+0821f46e4a9888262e8f63d5a3c39e3be93e62fa3acd95febeb9a2c9bd9131a1  model.safetensors.index.json
+3643128012845562d066540990eceb012e6dc9d1ba794c668d774a91edcd9dbb  model_extra_tensors.safetensors
+8af9028616e41932e0c949cd5364d2da0a69d15375af9bb404cab1e4d723f581  mtp_draft_vocab_ids.pt

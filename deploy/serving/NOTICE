@@ -1,0 +1,6 @@
+deploy/serving 의 다음 파일은 syv-ai/HyperQwen(커밋 8cf642e, Apache License 2.0, LICENSE.HyperQwen)에서 가져왔다.
+- patches/vllm-0.30.0/*.patch 12개: patches/ 에서 그대로(바이트 같음, sha 는 patches/hyperqwen-8cf642e.sha256 과 같다)
+- prepare/translate_chat_template.py, prepare/harden_chat_template.py, prepare/atomic_publish.py(앞 둘이 가져다 쓰는 보조 모듈): 그대로
+- bench/quality_battery.py: 모델 이름을 QUALITY_MODEL 로 받게 한 줄을 고쳤다(그 밖 그대로)
+patches/vllm-0.30.0 의 pristine.sha256·applied.sha256 은 vLLM v0.30.0(Apache 2.0) 원본 파일과 그 위에 이 묶음을 덧댄 결과의 sha256 이다.
+templates/qwen38-27b-chat.jinja 는 Qwen/Qwen3.8-27B(Apache License 2.0)의 chat_template.jinja 다(커밋 8c0b3d30, sha256 c3cf9e34…, 바이트 같음).

@@ -1,0 +1,4 @@
+# bench/quality_battery.py 의 parquet 읽기용. pip install --no-deps --require-hashes(serving.sh). 11/9 PyPI JSON 의 sha256
+pyarrow==20.0.0 \
+    --hash=sha256:2c3a01f313ffe27ac4126f4c2e5ea0f36a5fc6ab51f8726cf41fee4b256680bd \
+    --hash=sha256:4250e28a22302ce8692d3a0e8ec9d9dde54ec00d237cff4dfa9c1fbf79e472a8

@@ -1,0 +1,40 @@
+#!/bin/sh
+# stewart-cloud — Vast.ai 에서 stewart GPU 인스턴스 빌리기·보기·지우기(고정된 동작만).
+# 설치: /opt/stewart-cloud/bin/stewart-cloud (root 소유 755). 본체는 /opt/stewart-cloud/stewart_cloud.py
+# 형태(그 밖은 exit 64):
+#   stewart-cloud offers [serve|eval|quant] [4090]     조건에 맞는 offer 상위 몇 개(offers = serve)
+#   stewart-cloud offers eval [4090] <장 수>           eval 을 그 장 수로만(예: offers eval 8)
+#   stewart-cloud up [serve|eval|quant] <offer_id> <max_dph> 그 offer 로 빌린다(돈이 든다, up <id> <상한> = serve)
+#   stewart-cloud status                               stewart- 이름표 인스턴스 보기
+#   stewart-cloud up eval <offer_id> <max_dph> <계획>   eval 을 계획(serving models.toml plans)으로
+#   stewart-cloud down <instance_id>                   파드 logout → Destroy
+#   stewart-cloud logs <instance_id> [daemon]          로그 끝 200줄, 비밀 꼴 가림
+#   stewart-cloud verify <묶음> <커밋40> <PS64>          커밋에서 묶음을 다시 만들어 묶음 폴더·PS 와 대조만(키·망 없음)
+#   stewart-cloud publish <묶음> <커밋40> <PS64>         verify + gist + Vast 템플릿 만들기 + 지금 템플릿 전환
+#   stewart-cloud templates                             기록한 템플릿을 API 로 읽어 기록과 같은지
+# 역할: serve(1장, stewart-gpu) · eval·eval2(여러 장, stewart-gpu-eval·-eval2) · quant(변환, stewart-quant). 역할마다 1개, 합쳐 최대 4개.
+# 키는 로그인 키체인(stewart-cloud.vast-api · stewart-cloud.vast-template · stewart-cloud.github-gist / 부른 사용자)에서
+# 본체가 직접 읽는다. 환경 변수·명령줄로 받지 않는다.
+#  0. 환경을 비우고 다시 시작한다(env -i). 프록시·PYTHON* 변수 등이 끼어들지 않는다.
+set -eu
+SELF=/opt/stewart-cloud/bin/stewart-cloud
+PY=/opt/stewart-cloud/stewart_cloud.py
+
+if [ "${1-}" != "--clean-env" ]; then
+  case "${1-}" in
+    status)        [ $# -eq 1 ] || { echo "stewart-cloud: status 에는 인자가 없다" >&2; exit 64; } ;;
+    offers)        [ $# -le 4 ] || { echo "stewart-cloud: offers [serve|eval|quant] [4090] | offers eval [4090] <장 수>" >&2; exit 64; } ;;
+    up)            [ $# -ge 3 ] && [ $# -le 5 ] || { echo "stewart-cloud: up [serve|eval|quant] <offer_id> <max_dph> | up eval <offer_id> <max_dph> <계획>" >&2; exit 64; } ;;
+    logs)          [ $# -eq 2 ] || [ $# -eq 3 ] || { echo "stewart-cloud: logs <instance_id> [daemon]" >&2; exit 64; } ;;
+    down)          [ $# -eq 2 ] || { echo "stewart-cloud: down <instance_id>" >&2; exit 64; } ;;
+    verify|publish) [ $# -eq 4 ] || { echo "stewart-cloud: $1 <묶음 vN|quant-vN> <커밋 40자> <PS 64자>" >&2; exit 64; } ;;
+    templates)     [ $# -eq 1 ] || { echo "stewart-cloud: templates 에는 인자가 없다" >&2; exit 64; } ;;
+    *) echo "stewart-cloud: 형태는 offers [serve|eval|eval2|quant] [4090] | offers eval|eval2 [4090] <장 수> | status | up [serve|eval|eval2|quant] <offer_id> <max_dph> | up eval|eval2 <offer_id> <max_dph> <계획> | down <instance_id> | logs <instance_id> [daemon] | verify|publish <묶음> <커밋> <PS> | templates 뿐이다" >&2; exit 64 ;;
+  esac
+  U=$(/usr/bin/id -un)
+  exec /usr/bin/env -i USER="$U" LOGNAME="$U" LANG=en_US.UTF-8 \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh "$SELF" --clean-env "$@"
+fi
+shift
+umask 077
+exec /usr/bin/python3 -I -B "$PY" "$@"

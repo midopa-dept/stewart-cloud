@@ -1,0 +1,253 @@
+# 시험용 local 표: 가짜 별칭·저장소 이름과 모의 테일넷 주소(100.64.0.0/24). 시험이 임시 deploy 사본 위에 얹어 읽는다(tests/__init__.py).
+schema = 1
+default = "qwen38-27b-demo-w4a16"
+
+[home]
+server_ip = "100.64.0.9"
+
+[quant]
+audit = ["qwen38-27b-orig-w4a16q", "qwen38-27b-demo-w4a16q"]   # 변환 인스턴스의 층별 ΔW 감사(원본 → 편집본, 요약 수치만)
+
+# ---- 모델 A: 지금 모델 ----
+[models.qwen38-27b-demo-w4a16]
+source = "hf"
+repo = "example-org/Demo-Qwen3.8-27B-W4A16-AutoRound"
+rev = "c20530baefe3e77ccfc6891c2b50cce7ea28bf1e"          # 2026-08-25
+dir = "Demo-Qwen3.8-27B-W4A16-AutoRound"     # /workspace/stewart/models/ 아래 이름(v6 와 같게 — 받아 둔 것을 그대로 쓴다)
+pins = "pins/qwen38-27b-demo-w4a16.sha256"
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체 + int8 lm_head·임베딩·MTP + draft head 40,960(HyperQwen prepare 4단계)"
+served_name = "qwen3.8-27b"
+adapters = ["hyperqwen-8cf642e", "vllm-patched"]       # auto 는 이미지에서 되는 첫 것
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+chat_template_fix = ["translate"]   # 지금 운영과 같게: HyperQwen prepare 의 harden 은 /app/models 만 보므로 우리 폴더에는 translate 만 걸린다
+backend_precision = "W4A16-AutoRound"
+
+[models.qwen38-27b-demo-w4a16.fast]   # hyperqwen 어댑터의 FAST_VARIANT=1 만 쓴다(syvai int4 head·자체 draft 어휘)
+repo = "syvai/qwen3.8-27b-3090-fast-variant"
+rev = "124c14e7e8c7d2f5402933b9af368e772a9fcf0c"           # 2026-08-18
+pins = "pins/qwen38-27b-demo-w4a16.fast.sha256"
+files = ["model-00007-of-00007.safetensors", "model_extra_tensors.safetensors", "mtp_draft_vocab_ids.pt", "config.json", "model.safetensors.index.json"]
+
+[models.qwen38-27b-demo-w4a16.serve]   # vllm-patched·vllm-stock 의 vllm serve 인자. HyperQwen single·SPEC=mtp·CTX=long·PREFIX_CACHE=1 이 푼 값과 같게
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+[models.qwen38-27b-demo-w4a16.hyperqwen]   # hyperqwen 어댑터에 넘기는 env(start_qwen.sh 가 위 인자로 푼다)
+CTX = "long"
+SPEC = "mtp"
+
+# ---- demo edited BF16 의 우리 조리법 W4A16(A 와 같은 원본을 우리 손으로) ----
+[models.qwen38-27b-demo-w4a16q]
+source = "home"
+pending = true          # 변환·promote 전: 고를 수 없다. promote 가 찍은 files 를 붙이고 이 줄을 뺀다
+dir = "Demo-Qwen3.8-27B-W4A16-AutoRound-int8h"
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체 + int8 lm_head·임베딩·MTP + draft head 40,960(deploy/quant 조리법, int8h 세트)"
+served_name = "qwen3.8-27b"
+adapters = ["hyperqwen-8cf642e", "vllm-patched"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+
+[models.qwen38-27b-demo-w4a16q.quant_src]   # deploy/quant 변환 대상(run-convert.sh 가 order 차례로). pins 는 deploy/quant 기준
+repo = "example-org/Demo-Qwen3.8-27B"
+rev = "739e3c5b89849f6c238ce1e5b70008612ae42cdd"
+pins = "pins/qwen38-27b-demo-bf16.sha256"
+pad_to = 0
+order = 2
+
+[models.qwen38-27b-demo-w4a16q.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+
+[models.qwen38-27b-demo-w4a16q.hyperqwen]
+CTX = "long"
+SPEC = "mtp"
+
+# ---- 모델 C: demo2 BF16 의 우리 조리법 W4A16(0 채우기 17536) ----
+[models.qwen38-27b-demo2-w4a16]
+source = "home"
+pending = true          # 변환·promote 전: 고를 수 없다. promote 가 찍은 files 를 붙이고 이 줄을 뺀다
+dir = "Qwen3.8-27B-Demo2-W4A16-AutoRound-int8h"
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체(중간 크기 17409 → 17536 0 채우기) + int8 lm_head·임베딩·MTP + draft head 40,960(int8h 세트)"
+served_name = "qwen3.8-27b"
+adapters = ["hyperqwen-8cf642e", "vllm-patched"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+
+[models.qwen38-27b-demo2-w4a16.quant_src]   # deploy/quant 변환 대상(run-convert.sh 가 order 차례로). pins 는 deploy/quant 기준
+repo = "example-org/Demo2-Qwen3.8-27B"
+rev = "7adbeac6b5ade1c13fbed1198a6e95be0475508c"
+pins = "pins/demo2-bf16.sha256"
+pad_to = 17536
+order = 3
+
+[models.qwen38-27b-demo2-w4a16.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+
+[models.qwen38-27b-demo2-w4a16.hyperqwen]
+CTX = "long"
+SPEC = "mtp"
+
+# ---- 모델 B1: Qwen3.6-35B-A3B demo, 3090 두 장 tp=2 ----
+[models.qwen36-35b-a3b-demo-w4a16]
+source = "hf"
+repo = "example-org/Demo-Qwen3.6-35B-A3B-W4A16-GPTQ"
+rev = "a59be340047b02ec167cd2c0eefc3c387c467700"           # 2026-10-22
+dir = "Demo-Qwen3.6-35B-A3B-W4A16-GPTQ"
+pins = "pins/qwen36-35b-a3b-demo-w4a16.sha256"
+arch = "Qwen3_5MoeForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "llm-compressor GPTQ W4A16(recipe.yaml: lm_head·visual·in_proj_a/b·shared_expert 제외, actorder static), MTP BF16 별도 파일. 22.2 GB"
+served_name = "qwen3.6-35b-a3b"
+adapters = ["vllm-patched", "vllm-stock"]   # hyperqwen 은 27B dense 전용이라 없다
+patchset = "vllm-0.30.0"
+tp = 2
+vram_min_gb = 24
+chat_template_fix = []
+backend_precision = "W4A16-GPTQ"
+
+[models.qwen36-35b-a3b-demo-w4a16.serve]   # 첫 부팅에서 KV·속도를 보고 고친다. A 와 비교하려고 같은 값으로 시작
+max_model_len = 150000
+gpu_memory_utilization = 0.90
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+# ---- 차선 계획(eval 인스턴스, pod v7). CF 의 PLAN=<이름> 으로 고른다. 없으면 차선마다 MODEL·ADAPTER 하나(지금처럼) ----
+# 차선 k 는 vLLM 127.0.0.1:80k0, 상태 80k1(T20). 카드는 앞 차선부터 차례로 tp 장씩. hyperqwen 어댑터 차선은 차선 0 이어야 한다
+# (그 차선만 entrypoint 의 prepare·verify 를 돈다). quality = true 인 차선은 quality_battery 를 돈다(그 밖 차선은 v7 의 smoke).
+# env = 계획의 비교 조건(CTX fast|long, SPEC mtp, PREFIX_CACHE 0|1, FAST_VARIANT 0|1). eval 역할만 이것으로 CF 값을 덮는다 — serve 는 PLAN 을 읽지 않는다.
+# gpus = 차선 카드 합과 같아야 하고(T25), 인스턴스 장 수와도 같아야 한다(남는 카드 없음 — 다르면 pod 이 HALT).
+# fill = true 면 gpus 는 최소 장 수이고, 남는 카드를 마지막 차선과 같은 차선(quality false)으로 tp 장씩 채운다(4장·8장 어디서나).
+[plans.cmp-a-b1]
+note = "첫 대여: 3090 4장. A 를 두 어댑터로(같은 HyperQwen 이미지·같은 torch) + B1 tp=2. FAST_VARIANT=0 으로 두 A 차선이 같은 무게를 쓴다"
+image = "hyperqwen"
+gpus = 4
+env = { CTX = "long", SPEC = "mtp", PREFIX_CACHE = "1", FAST_VARIANT = "0" }   # 비교 조건은 계획이 갖는다(T21b). CF 에는 PLAN 만
+lanes = [
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-demo-w4a16", adapter = "vllm-patched", quality = true },
+  { model = "qwen36-35b-a3b-demo-w4a16", adapter = "vllm-patched", quality = true },
+]
+
+[plans.a-x4]
+note = "T23: 3090 4장에 모델 A·hyperqwen 를 카드마다 하나씩(지금 E5~E11 기준 조건). v7 eval(PLAN 없음)과 같은 동작 — 품질 점검은 차선 0, 나머지는 짧은 응답 확인"
+image = "hyperqwen"
+gpus = 4
+env = { CTX = "long", SPEC = "mtp", PREFIX_CACHE = "1", FAST_VARIANT = "1" }   # vast/v6 config-day2-main.txt 와 같다(E5~E11)
+lanes = [
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = false },
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = false },
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = false },
+]
+
+[plans.a-all]
+note = "T25: 카드마다 A·hyperqwen 한 차선(4장이면 a-x4 와 같다, 8장이면 차선 8). 조건은 a-x4 와 같다. 품질 점검은 차선 0, 나머지는 짧은 응답 확인"
+image = "hyperqwen"
+gpus = 1
+fill = true
+env = { CTX = "long", SPEC = "mtp", PREFIX_CACHE = "1", FAST_VARIANT = "1" }   # a-x4 와 같다(E5~E13)
+lanes = [
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = true },
+]
+
+[plans.cmp-a-b1-x2]
+note = "T25: cmp-a-b1 을 8장에 두 벌 — A·hyperqwen 2, A·vllm-patched 2, B1 tp2 2(카드 4·5, 6·7). 품질 점검은 갈래마다 첫 차선만(두 번째는 같은 설정)"
+image = "hyperqwen"
+gpus = 8
+env = { CTX = "long", SPEC = "mtp", PREFIX_CACHE = "1", FAST_VARIANT = "0" }   # cmp-a-b1 과 같다
+lanes = [
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = false },
+  { model = "qwen38-27b-demo-w4a16", adapter = "vllm-patched", quality = true },
+  { model = "qwen38-27b-demo-w4a16", adapter = "vllm-patched", quality = false },
+  { model = "qwen36-35b-a3b-demo-w4a16", adapter = "vllm-patched", quality = true },
+  { model = "qwen36-35b-a3b-demo-w4a16", adapter = "vllm-patched", quality = false },
+]
+
+[plans.off-a-b1]
+note = "결정 2 (a): 공식 vllm/vllm-openai v0.30.0 이미지(digest 를 채운 뒤). A·B1 을 vllm-patched 로. cmp-a-b1 의 차선 1·2 와 같은 결과인지 본다"
+image = "vllm-openai"
+gpus = 3
+env = { CTX = "long", SPEC = "mtp", PREFIX_CACHE = "1", FAST_VARIANT = "0" }   # cmp-a-b1 과 같은 조건(차선 1·2 와 견준다)
+lanes = [
+  { model = "qwen38-27b-demo-w4a16", adapter = "vllm-patched", quality = true },
+  { model = "qwen36-35b-a3b-demo-w4a16", adapter = "vllm-patched", quality = true },
+]
+
+[plans.a-spec-ab]
+note = "모델 A·hyperqwen 4장: 차선 0·1 은 추측 디코딩 mtp, 차선 2·3 은 끔. 같은 무게·조건에서 mtp 수락률·속도와 끈 쪽을 한 대여에서 견준다. 품질 점검은 차선 0(mtp: GSM8K 만)·2(off: PPL 포함)"
+image = "hyperqwen"
+gpus = 4
+env = { CTX = "long", SPEC = "mtp", PREFIX_CACHE = "1", FAST_VARIANT = "1" }
+lanes = [
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = false },
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = true, spec = "off" },
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = false, spec = "off" },
+]

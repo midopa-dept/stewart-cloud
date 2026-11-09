@@ -1,0 +1,32 @@
+stewart-cloud
+Copyright 2026 midopa-dept
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by third parties:
+
+- vLLM (https://github.com/vllm-project/vllm), Apache License 2.0.
+  The files in deploy/serving/patches/vllm-0.30.0/*.patch modify vLLM v0.30.0 source files.
+  pristine.sha256 and applied.sha256 list the vLLM files before and after the patches.
+
+- HyperQwen by syv-ai (https://github.com/syv-ai/HyperQwen), commit 8cf642e, Apache License 2.0
+  (a copy is in deploy/serving/LICENSE.HyperQwen; details in deploy/serving/NOTICE). Taken from it:
+  - 12 patch files in deploy/serving/patches/vllm-0.30.0/ (byte-identical; hashes in
+    deploy/serving/patches/hyperqwen-8cf642e.sha256).
+  - deploy/serving/prepare/translate_chat_template.py, harden_chat_template.py and atomic_publish.py (unchanged).
+  - deploy/serving/bench/quality_battery.py (one line changed: the model name is read from QUALITY_MODEL).
+
+- Qwen/Qwen3.8-27B (https://huggingface.co/Qwen/Qwen3.8-27B), Apache License 2.0:
+  deploy/serving/templates/qwen38-27b-chat.jinja is its chat_template.jinja (byte-identical).
+
+Tools fetched and run at runtime inside the rented machine (not redistributed here):
+- Intel AutoRound (https://github.com/intel/auto-round), Apache License 2.0 — used by deploy/quant.
+- Container images referenced by digest only (vllm/vllm-openai, ghcr.io/syv-ai/hyperqwen); each image
+  is under its own license.
+- Tailscale client binaries, downloaded by the pod at a pinned version and checked by sha256.
+
+Model weights are not distributed. Every model listed in deploy/serving/models.toml is downloaded by the
+user from its original location and is subject to its own license (see the model card).
+
+Tailscale is a trademark of Tailscale Inc. Vast.ai is a trademark of its owner.
+This project is not affiliated with or endorsed by either company.
