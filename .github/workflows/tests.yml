@@ -22,6 +22,44 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.13"
+      - name: Diagnose loopback (macOS)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          for o in --getglobalstate --getblockall --getstealthmode; do
+            echo "::notice title=socketfilterfw $o::$(/usr/libexec/ApplicationFirewall/socketfilterfw $o 2>&1 | tr '\n' ' ')"
+          done
+          python - <<'PY'
+          import socket, subprocess, sys, threading, time
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          def note(title, msg):
+              print(f"::notice title={title}::{msg}")
+
+          def timed_connect(addr):
+              t = time.monotonic()
+              try:
+                  socket.create_connection(addr, timeout=10).close()
+                  return f"{time.monotonic() - t:.3f}s ok"
+              except OSError as e:
+                  return f"{time.monotonic() - t:.3f}s {type(e).__name__}"
+
+          t = time.monotonic()
+          fq = socket.getfqdn("127.0.0.1")
+          note("getfqdn 127.0.0.1", f"{time.monotonic() - t:.3f}s -> {fq}")
+          t = time.monotonic()
+          srv = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+          note("HTTPServer init", f"{time.monotonic() - t:.3f}s")
+          threading.Thread(target=srv.serve_forever, daemon=True).start()
+          note("connect to listening port", timed_connect(srv.server_address))
+          s = socket.socket()
+          s.bind(("127.0.0.1", 0))
+          note("connect to bound, not listening port", timed_connect(s.getsockname()))
+          r = subprocess.run([sys.executable, "-m", "unittest", "tests.test_modelrecv.TRecv", "-v"],
+                             capture_output=True, text=True, timeout=600)
+          ready = [ln.split("ready ", 1)[1].rstrip("]") for ln in r.stderr.splitlines() if "[modelrecv ready" in ln]
+          note("TRecv alone", f"rc={r.returncode} ready={' '.join(ready)}")
+          PY
       - name: Run tests
         env:
           PYTHONDONTWRITEBYTECODE: "1"

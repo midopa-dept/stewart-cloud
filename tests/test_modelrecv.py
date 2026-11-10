@@ -96,8 +96,12 @@ class TRecv(unittest.TestCase):
             self.result["rc"] = MR.run("alias-x", files or self.files, self.tmp / "m", "100.64.0.9", self.port, timeout_s,
                                        self.tmp / "fetch.json", ready=ready)
         self.th = threading.Thread(target=go, daemon=True)
+        t0 = time.monotonic()
         self.th.start()
-        ready.wait(5)
+        # 창구가 listen 한 뒤에만 붙는다. HTTPServer.server_bind 는 bind 와 listen 사이에 socket.getfqdn(역방향 DNS)을 불러,
+        # 그것이 느린 기계(macOS CI)에서는 몇 초 걸릴 수 있다. 기다림을 확인하지 않으면 listen 전에 붙어 시간 초과가 난다.
+        self.assertTrue(ready.wait(60), "수신 창구가 60초 안에 뜨지 않았다")
+        print(f"[modelrecv ready {time.monotonic() - t0:.2f}s]", file=sys.stderr)
 
     def url(self, p):
         return f"http://127.0.0.1:{self.port}{p}"
