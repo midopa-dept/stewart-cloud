@@ -10,10 +10,11 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from tests import FIX_ROOT
+from tests import FIX_ROOT, LOCAL
 from unittest import mock
 
 
@@ -23,6 +24,31 @@ class TIdleStop(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("idle_stop", FIX_ROOT / "deploy/vast/idle_stop.py")
         self.m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.m)
+
+    def test_local_requests_skip_proxies(self):
+        """127.0.0.1 요청(fetch·_http)은 환경 프록시·시스템 프록시가 있어도 직접 간다(macOS urllib 은 시스템 프록시를 따른다)."""
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"vllm:generation_tokens_total 7\n" if self.path == "/metrics" else b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        port = srv.server_address[1]
+        dead = "http://127.0.0.1:9"                                              # 닫힌 포트: 프록시로 가면 실패한다
+        env = {"HTTP_PROXY": dead, "http_proxy": dead, "HTTPS_PROXY": dead, "https_proxy": dead, "NO_PROXY": "", "no_proxy": ""}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch("urllib.request.getproxies", lambda: {"http": dead, "https": dead}):   # 시스템 프록시 흉내
+            self.assertEqual(self.m.fetch(f"http://127.0.0.1:{port}/metrics")["vllm:generation_tokens_total"], 7.0)
+            self.assertEqual(self.m._http(f"http://127.0.0.1:{port}/health")[0], 200)
+            with self.assertRaises(OSError):                                      # 같은 조건에서 기본 urlopen 은 프록시로 간다
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5)
 
     def test_parse(self):
         t = '# HELP x\nvllm:num_requests_running{model_name="q"} 0.0\nvllm:generation_tokens_total{a="1"} 10\n' \
@@ -55,7 +81,7 @@ class TIdleStop(unittest.TestCase):
         srv = self.m.serve_status(0, lambda: self.m.status(d, w, 100, "20000, 24564, 0, 30"))
         try:
             import urllib.request
-            with urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/status", timeout=5) as r:
+            with LOCAL.open(f"http://127.0.0.1:{srv.server_address[1]}/status", timeout=5) as r:
                 st = json.loads(r.read())
         finally:
             srv.shutdown()
@@ -918,7 +944,7 @@ class TIdleStopLanes(unittest.TestCase):
             import urllib.request
             got = []
             for srv in srvs:
-                with urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/status", timeout=5) as r:
+                with LOCAL.open(f"http://127.0.0.1:{srv.server_address[1]}/status", timeout=5) as r:
                     got.append(json.loads(r.read()))
         finally:
             for srv in srvs:

@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from tests import FIX_ROOT
+from tests import FIX_ROOT, LOCAL
 
 ROOT = FIX_ROOT / "deploy" / "serving"
 
@@ -106,13 +106,13 @@ class TRecv(unittest.TestCase):
         req = urllib.request.Request(self.url(f"/files/{name}"), data=data, method="PUT",
                                      headers={"Content-Length": str(len(data) if length is None else length)})
         try:
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with LOCAL.open(req, timeout=10) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"{}")
 
     def need(self):
-        with urllib.request.urlopen(self.url("/need"), timeout=5) as r:
+        with LOCAL.open(self.url("/need"), timeout=5) as r:
             return json.loads(r.read())
 
     def test_full_receive(self):
@@ -136,7 +136,7 @@ class TRecv(unittest.TestCase):
         self.assertEqual((st["state"], st["files_done"], st["bytes_done"], st["bytes_total"]),
                          ("done", 3, sum(map(len, self.contents.values())), sum(map(len, self.contents.values()))))
         with self.assertRaises(OSError):                                            # 다 받으면 창구를 닫는다
-            urllib.request.urlopen(self.url("/need"), timeout=2)
+            LOCAL.open(self.url("/need"), timeout=2)
 
     def test_sha_mismatch_halts(self):
         self.start()

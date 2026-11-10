@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests import FIX_ROOT
+from tests import FIX_ROOT, LOCAL
 
 ROOT = FIX_ROOT / "deploy" / "quant"
 
@@ -404,27 +404,27 @@ class TExport(unittest.TestCase):
         ctx = QS.Ctx(self.q, "100.64.0.9", None)
         srvs = QS.serve(ctx, "127.0.0.1", sp, ep)
         self.addCleanup(lambda: [x.shutdown() for x in srvs])
-        get = lambda port, path: json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5).read())
+        get = lambda port, path: json.loads(LOCAL.open(f"http://127.0.0.1:{port}{path}", timeout=5).read())
         st = get(sp, "/status")
         self.assertEqual((st["role"], st["stage"], st["export_ready"], st["exported"]), ("quant", "0-image", False, False))
         self.assertEqual(st["targets"], {"qwen38-27b-demo2-w4a16": "11-built", "qwen38-27b-orig-w4a16q": "11-built"})
         with self.assertRaises(urllib.error.HTTPError) as cm:
-            urllib.request.urlopen(f"http://127.0.0.1:{ep}/export", timeout=5)
+            LOCAL.open(f"http://127.0.0.1:{ep}/export", timeout=5)
         self.assertEqual(cm.exception.code, 409)                            # 아직
         self.build()
         idx = get(ep, "/export")
         alias = idx["sets"][1]["alias"]
-        body = urllib.request.urlopen(f"http://127.0.0.1:{ep}/export/{alias}/model-00001.safetensors", timeout=5).read()
+        body = LOCAL.open(f"http://127.0.0.1:{ep}/export/{alias}/model-00001.safetensors", timeout=5).read()
         self.assertEqual(body, b"w" * 5000)
         for bad in (f"/export/{alias}/x.bak", f"/export/{alias}/..%2Fspec.json", "/export/nope/config.json"):
             with self.assertRaises(urllib.error.HTTPError, msg=bad) as cm:
-                urllib.request.urlopen(f"http://127.0.0.1:{ep}{bad}", timeout=5)
+                LOCAL.open(f"http://127.0.0.1:{ep}{bad}", timeout=5)
             self.assertEqual(cm.exception.code, 404)
-        r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{ep}/export/done", data=b"", method="POST"), timeout=5)
+        r = LOCAL.open(urllib.request.Request(f"http://127.0.0.1:{ep}/export/done", data=b"", method="POST"), timeout=5)
         self.assertEqual(r.status, 200)
         self.assertTrue((self.q / "done" / "exported").exists())
         self.assertTrue(get(sp, "/status")["exported"])
-        r = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{sp}/logout", data=b"", method="POST"), timeout=5)
+        r = LOCAL.open(urllib.request.Request(f"http://127.0.0.1:{sp}/logout", data=b"", method="POST"), timeout=5)
         self.assertEqual(json.loads(r.read())["ok"], True)
 
 

@@ -8,6 +8,7 @@ import atexit
 import os
 import shutil
 import tempfile
+import urllib.request
 from pathlib import Path
 
 os.environ.setdefault("STEWART_SERVED_CONTEXT", "0")
@@ -17,3 +18,6 @@ FIX_ROOT = Path(tempfile.mkdtemp(prefix="stewart-cloud-tests-"))
 shutil.copytree(_REPO / "deploy", FIX_ROOT / "deploy", ignore=shutil.ignore_patterns("__pycache__"))
 shutil.copytree(_REPO / "tests" / "fixtures" / "deploy", FIX_ROOT / "deploy", dirs_exist_ok=True)
 atexit.register(shutil.rmtree, FIX_ROOT, True)
+
+# 127.0.0.1 시험 서버로 가는 요청: 환경·시스템 프록시를 타지 않는다(macOS urllib 은 시스템 프록시를 따른다 — CI runner)
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))

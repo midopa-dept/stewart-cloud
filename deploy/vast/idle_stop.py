@@ -158,7 +158,7 @@ def model_fetch(state_dir: str) -> dict | None:
 
 def fetch(url: str, timeout: float = 10) -> dict[str, float] | None:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
+        with LOCAL.open(url, timeout=timeout) as r:
             return parse_metrics(r.read().decode("utf-8", "replace"))
     except Exception:
         return None
@@ -182,6 +182,9 @@ def _logout(state_dir: str) -> None:
 
 
 KEY_FILE = "/dev/shm/vast-key"
+# 파드 안 127.0.0.1(vLLM·차선 상태)로 가는 요청은 환경·시스템 프록시를 타지 않는다(macOS urllib 은 시스템 프록시도 따른다).
+# 밖으로 가는 Vast API 요청은 urlopen 그대로.
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 API = "https://console.vast.ai/api/v0/instances/{}/"
 
 
@@ -295,7 +298,7 @@ def _http(url: str, body: dict | None = None, timeout: float = 30) -> tuple[int,
     req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with LOCAL.open(req, timeout=timeout) as r:
             raw = r.read(2_000_000)
             code = r.status
     except urllib.error.HTTPError as e:

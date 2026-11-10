@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from tests import FIX_ROOT
+from tests import FIX_ROOT, LOCAL
 
 
 def load():
@@ -40,7 +40,7 @@ class Logout(unittest.TestCase):
 
     def post(self, path, body=b"ignored"):
         req = urllib.request.Request(self.base + path, data=body, method="POST")
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with LOCAL.open(req, timeout=5) as r:
             return json.loads(r.read())
 
     def test_once(self):
@@ -55,14 +55,14 @@ class Logout(unittest.TestCase):
 
     def test_get_and_other_paths(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
-            urllib.request.urlopen(self.base + "/logout", timeout=5)
+            LOCAL.open(self.base + "/logout", timeout=5)
         self.assertEqual(cm.exception.code, 404)
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.post("/status")
         self.assertEqual(cm.exception.code, 404)
         self.assertEqual(self.calls, [])
         with mock.patch.dict(os.environ, {"CONTAINER_ID": "5555"}):
-            with urllib.request.urlopen(self.base + "/status", timeout=5) as r:     # 읽기 전용 상태는 그대로 + instance_id
+            with LOCAL.open(self.base + "/status", timeout=5) as r:     # 읽기 전용 상태는 그대로 + instance_id
                 st = json.loads(r.read())
         self.assertIn("uptime_s", st)
         self.assertEqual(st["instance_id"], "5555")
@@ -73,7 +73,7 @@ class Logout(unittest.TestCase):
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}/logout", data=b"", method="POST")
             with self.assertRaises(urllib.error.HTTPError):
-                urllib.request.urlopen(req, timeout=5)
+                LOCAL.open(req, timeout=5)
         finally:
             srv.shutdown()
             srv.server_close()
