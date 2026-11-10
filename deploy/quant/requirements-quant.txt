@@ -1,8 +1,8 @@
 # 변환 인스턴스(HyperQwen 8cf642e 이미지 venv)에 더하는 것만. 이미지에 이미 있는 꾸러미는 빼고 이미지 판을 쓴다.
 # 이미지에 있던 판은 constraints 로 묶어 바뀌면 멈춘다. 단 pyarrow·fsspec 은 풀어 준다(datasets 5.0.0 이 pyarrow>=21, 이미지는 20.0.0 — run-convert.sh 1단계).
 # auto-round 0.14.2 = 모델 A(ababaka)의 카드에 적힌 판. 나머지는 auto-round 0.14.2(2026-07-13) 무렵 판.
-accelerate==1.14.0
-datasets==5.0.0
+accelerate==1.15.0
+datasets==5.0.1
 py-cpuinfo==9.0.0
 pydantic==2.13.4
 # auto-round 0.14.2 는 run-convert.sh 가 휠을 먼저 받아 sha256 4265c11d…ca24 를 대조한 뒤 그 파일로 깐다
