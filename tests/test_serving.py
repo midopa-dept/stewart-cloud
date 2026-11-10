@@ -51,7 +51,7 @@ class TTable(unittest.TestCase):
         self.t = SV.load()
 
     def test_valid_and_two_models(self):
-        self.assertEqual(set(self.t["models"]), {A, B1, ORIGQ, HHQ, DEMO2})
+        self.assertEqual(set(self.t["models"]), {A, B1, ORIGQ, HHQ, DEMO2} | {f"{x}-{k}" for x in (ORIGQ, HHQ, DEMO2) for k in ("bf16h", "int8h")})
         self.assertEqual(self.t["default"], A)                                  # local 이 default 를 정한다
         self.assertEqual([x["alias"] for x in SV.quant_targets(self.t)], [ORIGQ, HHQ, DEMO2])
 
@@ -101,8 +101,8 @@ class TTable(unittest.TestCase):
         t["quant"]["audit"] = [ORIGQ, A]                                        # A 는 변환 대상이 아님
         self.assertTrue(any("quant.audit" in e for e in SV.validate(t, ROOT)))
         t = copy.deepcopy(raw)
-        del t["home"]["server_ip"]                                              # 고를 수 있는 home 별칭이 없으면 주소 없어도 됨
-        self.assertEqual(SV.validate(t, ROOT), [])
+        del t["home"]["server_ip"]                                              # 고를 수 있는 home 별칭(…-bf16h·…-int8h)이 있으니
+        self.assertTrue(any("home.server_ip" in e for e in SV.validate(t, ROOT)))   # 주소가 있어야 한다
         for pins in {x["pins"] for x in SV.quant_targets(raw)}:                 # 변환 pins 는 deploy/quant 에 있다
             lines = (ROOT.parent / "quant" / pins).read_text().split("\n")
             self.assertTrue(any(l.endswith("  model.safetensors.index.json") for l in lines), pins)
@@ -226,6 +226,115 @@ class TTable(unittest.TestCase):
         self.assertEqual(env["PYTORCH_CUDA_ALLOC_CONF"], "expandable_segments:False")    # tp>1(HyperQwen #163)
         self.assertEqual((env["VLLM_USE_FLASHINFER_SAMPLER"], argv[1]), ("0", "-c"))
         self.assertIn("--tensor-parallel-size", argv)
+
+    def test_prepared_int8h_mixed_plan(self):
+        """T35: prepared(int8h) 별칭은 어느 차선에서나 hyperqwen — prepare·verify 를 다시 돌리지 않는다(start_qwen.sh PREPARE=0)."""
+        oi, hi = ORIGQ + "-int8h", HHQ + "-int8h"
+        self.assertTrue(self.t["models"][oi].get("prepared") and self.t["models"][hi].get("prepared"))
+        self.assertEqual(SV.validate(SV.read_raw(), ROOT), [])
+        for name, want in (("x1-01-eval", [A, oi, hi, oi]), ("x1-01-eval2", [oi, hi, hi, oi])):
+            self.assertEqual([x["alias"] for x in SV.plan_lanes(self.t, name, "hyperqwen", 4)], want)
+            self.assertEqual(self.t["plans"][name]["env"]["FAST_VARIANT"], "0")   # A 도 int8h 와 같은 머리 처리
+        raw = SV.read_raw()                                                     # prepared 가 아니면 예전 규칙 그대로 막힌다
+        raw["models"][oi]["prepared"] = False
+        self.assertTrue(any("hyperqwen 어댑터는 차선 0 만" in e for e in SV.validate(raw, ROOT)))
+        raw = SV.read_raw()
+        raw["models"][ORIGQ + "-bf16h"]["prepared"] = True                      # hyperqwen 이 없는 별칭에는 못 단다
+        self.assertTrue(any("prepared 는 hyperqwen" in e for e in SV.validate(raw, ROOT)))
+        d = Path(tempfile.mkdtemp())
+        e = SV.select_env(self.t, oi, "hyperqwen-8cf642e", "hyperqwen")
+        self.assertEqual(e["M_PREPARED"], "1")
+        SV.write_env(e, d / "l.env")
+        base = {"STEWART_MODELS": "/w/models", "FAST_VARIANT": "0", "CTX": "long", "SPEC": "mtp"}
+        for lane in (0, 2):                                                     # 차선 0 이어도 prepare 없이
+            argv, env = SV.serve_cmd(self.t, d / "l.env", lane, 8000 + 10 * lane, base)
+            self.assertEqual(argv, ["bash", "/app/single-user/start_qwen.sh"])
+            self.assertEqual((env["PREPARE"], env["VERIFY"], env["MODEL"], env["FAST_VARIANT"]), ("0", "0", f"/w/models/{oi}", "0"))
+        e = SV.select_env(self.t, A, "hyperqwen-8cf642e", "hyperqwen")            # 모델 A 는 그대로 차선 0 에서 prepare
+        self.assertEqual(e["M_PREPARED"], "0")
+
+    def test_fetch_hf_mirror(self):
+        """T35: home 별칭에 mirror 가 있고 읽기 토큰 파일이 있으면 HF 사본에서 받아 files 로 대조한다. 토큰은 파일 경로(HF_TOKEN_PATH)로만.
+        토큰이 없거나 받기가 실패하면 집에서 밀어 넣기(modelrecv)로 간다. 대조가 어긋나면 HALT."""
+        d = Path(tempfile.mkdtemp())
+        S, sv = d / "S", d / "S" / "serving"
+        sv.mkdir(parents=True)
+        shutil.copy(ROOT / "serving.sh", sv / "serving.sh")
+        good = {"config.json": b'{"a": 1}', "model.safetensors.index.json": b"{}", "m-1.safetensors": b"w" * 3000}
+        (d / "fix" / "al-int8h").mkdir(parents=True)
+        for n, b in good.items():
+            (d / "fix" / "al-int8h" / n).write_bytes(b)
+        (d / "fix" / "other").mkdir()
+        (d / "fix" / "other" / "x.json").write_text("{}")
+        pins = "".join(f"{hashlib.sha256(b).hexdigest()}  {n}\n" for n, b in sorted(good.items()))
+        (sv / "serving.py").write_text(f"import sys\nif sys.argv[1] == 'pins': print({pins!r}, end='')\nelif sys.argv[1] == 'home': print('100.64.0.1 8090 1')\n")
+        (d / "hf").write_text("#!/bin/sh\n" f'echo "hf $* TOKEN_PATH=$HF_TOKEN_PATH TOKEN=${{HF_TOKEN:-}}" >> "{d}/calls"\n'
+                              f'[ -e "{d}/hf-fail" ] && exit 1\n'
+                              'while [ $# -gt 0 ]; do case "$1" in --local-dir) shift; LD=$1;; esac; shift; done\n'
+                              f'mkdir -p "$LD" && cp -R "{d}/fix/al-int8h" "{d}/fix/other" "$LD/"\n')
+        (d / "hf").chmod(0o755)
+        sha = "sha256sum" if shutil.which("sha256sum", path="/usr/bin:/bin") else "shasum -a 256"
+        def run(token: bool, extra: str = ""):
+            tok = d / "tok"
+            tok.write_text("hf_ro_xxx") if token else tok.unlink(missing_ok=True)
+            sh = (f"set -euo pipefail\nS={S}\nPY={sys.executable}\nHF={d}/hf\nHF_READ_FILE={tok}\n"
+                  f'log() {{ echo "LOG $*"; }}\nhalt() {{ echo "HALT $*"; exit 7; }}\n'
+                  f'pin_check() {{ ( cd "$1" && printf "%s\\n" "$2" | {sha} -c >/dev/null ) || halt "$3 sha256 불일치"; log "$3 sha256 일치"; }}\n'
+                  f". {sv}/serving.sh\n"
+                  f"M_SOURCE=home M_ALIAS=al-int8h M_REV=home-abc M_MIRROR_REPO=o/r M_MIRROR_REV={'a' * 40} MDIR={d}/models/al-int8h\n"
+                  f"{extra}\nserving_fetch\necho FETCH-END\n")
+            return subprocess.run(["bash", "-c", sh], capture_output=True, text=True, timeout=30)
+        r = run(True)
+        self.assertIn("LOG al-int8h(hf-mirror) sha256 일치", r.stdout, r.stdout + r.stderr)
+        self.assertIn("FETCH-END", r.stdout)
+        self.assertEqual(sorted(p.name for p in (d / "models" / "al-int8h").iterdir()), sorted([*good, ".stewart-rev"]))
+        call = (d / "calls").read_text()
+        self.assertIn("--include al-int8h/*", call)
+        self.assertIn(f"TOKEN_PATH={d}/tok TOKEN=\n", call)                       # 값이 아니라 파일 경로만
+        self.assertNotIn("modelrecv", r.stdout)
+        shutil.rmtree(d / "models")                                              # 토큰이 없으면 사본을 건너뛴다 → 집에서 받기(여기서는 가짜로 실패)
+        r = run(False, "modelrecv_called=1")
+        self.assertIn("model-fetch wait alias=al-int8h", r.stdout)
+        (d / "hf-fail").touch()                                                  # 받기 실패 → 집에서 받기로 넘어간다
+        r = run(True)
+        self.assertIn("hf-mirror 실패 rc=1", r.stdout)
+        self.assertIn("model-fetch wait alias=al-int8h", r.stdout)
+        (d / "hf-fail").unlink()
+        (d / "fix" / "al-int8h" / "m-1.safetensors").write_bytes(b"x" * 3000)   # 바이트가 다르면 HALT(표시를 남기지 않는다)
+        r = run(True)
+        self.assertIn("HALT al-int8h(hf-mirror) sha256 불일치", r.stdout)
+        self.assertFalse((d / "models" / "al-int8h" / ".stewart-rev").exists())
+
+    def test_logscrub_serve(self):
+        """serve 파드의 vLLM 출력에서 사용자 글을 지우고 수치·상태는 남긴다."""
+        L = _load("logscrub")
+        secret = "내 비밀 이야기를 길게 적은 사용자 글 0123456789"
+        cases = [f"(APIServer pid=1) INFO [logger.py:41] Received request chatcmpl-1: prompt: '{secret}', params: SamplingParams(n=1)",
+                 f"  Value error, [type=value_error, input_value={{'messages': [{{'role': 'user', 'content': '{secret}'}}]}}, input_type=dict]",
+                 f"jinja2.exceptions.TemplateError: {secret}",
+                 f'content: "{secret}"',
+                 "x" * 50 + f" '{secret}'",
+                 "y" * 500]
+        for c in cases:
+            out = L.scrub(c)
+            self.assertNotIn("비밀", out, c)
+            self.assertLessEqual(len(out), 260)
+        keep = ["INFO 11-11 [scheduler.py] request finished id=chatcmpl-1 reason=stop prompt_tokens=120 generated_tokens=400 elapsed_s=12.3",
+                "INFO 11-11 [gpu_model_runner.py] Model loading took 16.8 GiB and 40.2 seconds",
+                "INFO 11-11 [kv_cache_utils.py] GPU KV cache size: 120,000 tokens"]
+        for c in keep:
+            self.assertEqual(L.scrub(c), c)                                     # 수치·상태 줄은 그대로
+        sh = (ROOT.parent / "vast" / "pod-start.sh").read_text()
+        self.assertIn('exec > >($PY "$SV/logscrub.py" | tee -a "$S/vllm.log") 2>&1', sh)   # serve 갈래의 출력은 거른 뒤에만
+        self.assertLess(sh.index('if [ "$ROLE" = "eval" ]; then'), sh.index("logscrub.py"))   # eval 갈래 뒤(serve 만)
+        e = SV.serve_cmd(self.t, self._env_file(), 0, 8000, {"STEWART_MODELS": "/m", "FAST_VARIANT": "0"})[1]
+        self.assertEqual(e["VLLM_ENABLE_RESPONSES_API_STORE"], "0")              # 지난 응답을 서버가 쥐지 않는다
+        self.assertNotIn("--enable-log-requests", " ".join(SV.vllm_argv(self.t["models"][A], "/m", 8000)))
+
+    def _env_file(self):
+        d = Path(tempfile.mkdtemp())
+        SV.write_env(SV.select_env(self.t, "default", "auto", "hyperqwen"), d / "e")
+        return d / "e"
 
     def test_plan(self):
         lanes = SV.plan_lanes(self.t, "cmp-a-b1", "hyperqwen", 4)

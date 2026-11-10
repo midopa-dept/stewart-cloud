@@ -12,6 +12,12 @@
 #   stewart-cloud verify <묶음> <커밋40> <PS64>          커밋에서 묶음을 다시 만들어 묶음 폴더·PS 와 대조만(키·망 없음)
 #   stewart-cloud publish <묶음> <커밋40> <PS64>         verify + gist + Vast 템플릿 만들기 + 지금 템플릿 전환
 #   stewart-cloud templates                             기록한 템플릿을 API 로 읽어 기록과 같은지
+#   stewart-cloud balance                               계정 잔액 칸 + 켜진 $/hr 합 + 바닥까지 어림(읽기만)
+#   stewart-cloud retemplate <instance_id>              stewart- 인스턴스를 그 역할의 지금 템플릿으로 다시 만들고 정지면 켠다
+#   stewart-cloud up-keep <역할> <offer_id> <max_dph> <디스크GB>  같은 역할의 정지 인스턴스를 지우지 않고 하나 더(돈이 든다)
+#   stewart-cloud copy <id>:<경로> <id>:<경로>           인스턴스 → 인스턴스 복사(망 요금)
+#   stewart-cloud start <instance_id>                   켜기(GPU 값, 대기열에 걸릴 수 있다)
+#   stewart-cloud stop <instance_id>                    정지·켜기 대기 취소(디스크 남음)
 # 역할: serve(1장, stewart-gpu) · eval·eval2(여러 장, stewart-gpu-eval·-eval2) · quant(변환, stewart-quant). 역할마다 1개, 합쳐 최대 4개.
 # 키는 로그인 키체인(stewart-cloud.vast-api · stewart-cloud.vast-template · stewart-cloud.github-gist / 부른 사용자)에서
 # 본체가 직접 읽는다. 환경 변수·명령줄로 받지 않는다.
@@ -29,7 +35,12 @@ if [ "${1-}" != "--clean-env" ]; then
     down)          [ $# -eq 2 ] || { echo "stewart-cloud: down <instance_id>" >&2; exit 64; } ;;
     verify|publish) [ $# -eq 4 ] || { echo "stewart-cloud: $1 <묶음 vN|quant-vN> <커밋 40자> <PS 64자>" >&2; exit 64; } ;;
     templates)     [ $# -eq 1 ] || { echo "stewart-cloud: templates 에는 인자가 없다" >&2; exit 64; } ;;
-    *) echo "stewart-cloud: 형태는 offers [serve|eval|eval2|quant] [4090] | offers eval|eval2 [4090] <장 수> | status | up [serve|eval|eval2|quant] <offer_id> <max_dph> | up eval|eval2 <offer_id> <max_dph> <계획> | down <instance_id> | logs <instance_id> [daemon] | verify|publish <묶음> <커밋> <PS> | templates 뿐이다" >&2; exit 64 ;;
+    retemplate)    [ $# -eq 2 ] || { echo "stewart-cloud: retemplate <instance_id>" >&2; exit 64; } ;;
+    up-keep)       [ $# -eq 5 ] || { echo "stewart-cloud: up-keep <역할> <offer_id> <max_dph> <디스크 GB>" >&2; exit 64; } ;;
+    copy)          [ $# -eq 3 ] || { echo "stewart-cloud: copy <원본 id>:<경로> <대상 id>:<경로>" >&2; exit 64; } ;;
+    start|stop)    [ $# -eq 2 ] || { echo "stewart-cloud: $1 <instance_id>" >&2; exit 64; } ;;
+    balance)       [ $# -eq 1 ] || { echo "stewart-cloud: balance 에는 인자가 없다" >&2; exit 64; } ;;
+    *) echo "stewart-cloud: 형태는 offers [serve|eval|eval2|quant] [4090] | offers eval|eval2 [4090] <장 수> | status | up [serve|eval|eval2|quant] <offer_id> <max_dph> | up eval|eval2 <offer_id> <max_dph> <계획> | down <instance_id> | retemplate <instance_id> | up-keep <역할> <offer_id> <max_dph> <디스크GB> | copy <id>:<경로> <id>:<경로> | start|stop <instance_id> | logs <instance_id> [daemon] | verify|publish <묶음> <커밋> <PS> | templates | balance 뿐이다" >&2; exit 64 ;;
   esac
   U=$(/usr/bin/id -un)
   exec /usr/bin/env -i USER="$U" LOGNAME="$U" LANG=en_US.UTF-8 \

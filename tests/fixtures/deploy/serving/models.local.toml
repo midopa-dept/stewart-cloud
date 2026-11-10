@@ -251,3 +251,355 @@ lanes = [
   { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = true, spec = "off" },
   { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = false, spec = "off" },
 ]
+
+# ---- 집 보관 서버에서 받는 세트(bf16h·int8h, source = home)와 HF 비공개 사본(mirror) — 시험용 가짜 값 ----
+[models.qwen38-27b-orig-w4a16q-int8h]
+source = "home"
+dir = "qwen38-27b-orig-w4a16q-int8h"
+mirror = { repo = "example-org/model-mirror", rev = "0123456789abcdef0123456789abcdef01234567" }   # HF 비공개 사본(읽기 토큰), 대조는 files
+prepared = true        # 변환 8단계에서 HyperQwen prepare 를 거친 세트 — hyperqwen 차선이 prepare·verify 를 다시 돌리지 않는다
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체 + int8 lm_head·임베딩·MTP + draft head 40,960(deploy/quant 조리법, int8h 세트)"
+served_name = "qwen3.8-27b"
+adapters = ["hyperqwen-8cf642e", "vllm-patched"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+files = [
+  { name = "chat_template.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", size = 8952 },
+  { name = "config.json", sha256 = "0419d5fa2634d5d8be24e94f6428f786d27f6d8072c6032de95a6b38b76b089f", size = 17055 },
+  { name = "generation_config.json", sha256 = "aa5b015977d69a40775670b8361c23ac798270ade267444eb8cffcd7f04462eb", size = 214 },
+  { name = "model-00001-of-00007.safetensors", sha256 = "b0e8670bb452771912ffbb75175e8a1e962ccbd6e553a3e521951ef1a9253437", size = 3211003472 },
+  { name = "model-00002-of-00007.safetensors", sha256 = "2fe2941b5835b8b67ae19606a563b006d9ac0fb2e9b454f990492a29839c893c", size = 3195027104 },
+  { name = "model-00003-of-00007.safetensors", sha256 = "6aeca1369d11fd9b2a0a4ad45080a0f5761a35eb239535318fd5e6b76e7f85b8", size = 3195027104 },
+  { name = "model-00004-of-00007.safetensors", sha256 = "8a7ae06af8706c0e8bfedd02b602b59aad7a1e21d3ca9dc5dde204594ea2ae58", size = 3217442568 },
+  { name = "model-00005-of-00007.safetensors", sha256 = "5c9c112d3671ea4d298caacbcc09ac243ce638afdbc96e40ba26afba5129da47", size = 699275200 },
+  { name = "model-00006-of-00007.safetensors", sha256 = "1cf12480c4d0dfe818451436cbae36122fcb210b3adfb58ade4d74134c81693b", size = 1291274752 },
+  { name = "model-00007-of-00007.safetensors", sha256 = "fde4841f2bad2e8e43fdf85b45574056974915829a6f5b1f266c4d4113c72240", size = 1291264320 },
+  { name = "model.safetensors.index.json", sha256 = "5d44971af9922ef65755b0e9d2df64764cdf4f469fe5a841e4bc81e4ee46218a", size = 200180 },
+  { name = "model_extra_tensors.safetensors", sha256 = "326162eabe5eaa655fc3d005090536f0e5b51868199a2cea02668f716160e5b0", size = 644356792 },
+  { name = "mtp_draft_vocab_ids.json", sha256 = "e9794976c69695abb79458fde58d1f416de730e401deca7a275623e9ae003e09", size = 279256 },
+  { name = "preprocessor_config.json", sha256 = "0adb448101fcad74d4c5713f05270326885fe0c52c2eee0bf1e5331462ec95f6", size = 390 },
+  { name = "processor_config.json", sha256 = "762331886721710570474c11f32d66368a74f3735a3167e78f5ef447a5617240", size = 1191 },
+  { name = "quantization_config.json", sha256 = "e0cf4256c64d8215470d4fe7e6deb7fe1a84cc0cce8daa6ee9a4f2fbde4f7738", size = 11112 },
+  { name = "tokenizer.json", sha256 = "76a8d8ab694d412e59f68f08f8d44ea82a44e04310640d53323dcfbe111ba828", size = 19989325 },
+  { name = "tokenizer_config.json", sha256 = "efd78349ecaa8cec184b0c14ae914745efa736e9c8ecc57ff7e510f1680bc2ef", size = 2184 },
+]
+
+[models.qwen38-27b-orig-w4a16q-int8h.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+[models.qwen38-27b-orig-w4a16q-int8h.hyperqwen]
+CTX = "long"
+SPEC = "mtp"
+
+[models.qwen38-27b-orig-w4a16q-bf16h]
+source = "home"
+dir = "qwen38-27b-orig-w4a16q-bf16h"
+mirror = { repo = "example-org/model-mirror", rev = "0123456789abcdef0123456789abcdef01234567" }   # HF 비공개 사본(읽기 토큰), 대조는 files
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체 + BF16 lm_head·임베딩·MTP(deploy/quant 조리법, bf16h 세트 — 공식 vLLM 그대로)"
+served_name = "qwen3.8-27b"
+adapters = ["vllm-patched", "vllm-stock"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+files = [
+  { name = "chat_template.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", size = 8952 },
+  { name = "config.json", sha256 = "6d6bbd2b62a3c15d50fdbc497cfccd2a73324f912075fadb9942d6a60611a142", size = 15305 },
+  { name = "generation_config.json", sha256 = "aa5b015977d69a40775670b8361c23ac798270ade267444eb8cffcd7f04462eb", size = 214 },
+  { name = "model-00001-of-00007.safetensors", sha256 = "b0e8670bb452771912ffbb75175e8a1e962ccbd6e553a3e521951ef1a9253437", size = 3211003472 },
+  { name = "model-00002-of-00007.safetensors", sha256 = "2fe2941b5835b8b67ae19606a563b006d9ac0fb2e9b454f990492a29839c893c", size = 3195027104 },
+  { name = "model-00003-of-00007.safetensors", sha256 = "6aeca1369d11fd9b2a0a4ad45080a0f5761a35eb239535318fd5e6b76e7f85b8", size = 3195027104 },
+  { name = "model-00004-of-00007.safetensors", sha256 = "8a7ae06af8706c0e8bfedd02b602b59aad7a1e21d3ca9dc5dde204594ea2ae58", size = 3217442568 },
+  { name = "model-00005-of-00007.safetensors", sha256 = "5c9c112d3671ea4d298caacbcc09ac243ce638afdbc96e40ba26afba5129da47", size = 699275200 },
+  { name = "model-00006-of-00007.safetensors", sha256 = "c9477f6f7f6fecbf5d2317879549413cc62854802f0adb0a055c622444055410", size = 2542807272 },
+  { name = "model-00007-of-00007.safetensors", sha256 = "c0c0aa7df8325d109ef0a2dbe7dfd39eabb783508d9eb177b9bbb1584211f14c", size = 2542796896 },
+  { name = "model.safetensors.index.json", sha256 = "59001489378805090f133e0d1039e32c411949e25d675a5e34ea989b71801d42", size = 198291 },
+  { name = "model_extra_tensors.safetensors", sha256 = "be2d1d09d664a3eb6bd3a16d8d15b68d221e5ac9a24426429da752cab9b526c6", size = 849400392 },
+  { name = "preprocessor_config.json", sha256 = "0adb448101fcad74d4c5713f05270326885fe0c52c2eee0bf1e5331462ec95f6", size = 390 },
+  { name = "processor_config.json", sha256 = "762331886721710570474c11f32d66368a74f3735a3167e78f5ef447a5617240", size = 1191 },
+  { name = "quantization_config.json", sha256 = "e0cf4256c64d8215470d4fe7e6deb7fe1a84cc0cce8daa6ee9a4f2fbde4f7738", size = 11112 },
+  { name = "tokenizer.json", sha256 = "76a8d8ab694d412e59f68f08f8d44ea82a44e04310640d53323dcfbe111ba828", size = 19989325 },
+  { name = "tokenizer_config.json", sha256 = "efd78349ecaa8cec184b0c14ae914745efa736e9c8ecc57ff7e510f1680bc2ef", size = 2184 },
+]
+
+[models.qwen38-27b-orig-w4a16q-bf16h.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+[models.qwen38-27b-demo-w4a16q-int8h]
+source = "home"
+dir = "qwen38-27b-demo-w4a16q-int8h"
+mirror = { repo = "example-org/model-mirror", rev = "0123456789abcdef0123456789abcdef01234567" }   # HF 비공개 사본(읽기 토큰), 대조는 files
+prepared = true        # 변환 8단계에서 HyperQwen prepare 를 거친 세트 — hyperqwen 차선이 prepare·verify 를 다시 돌리지 않는다
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체 + int8 lm_head·임베딩·MTP + draft head 40,960(deploy/quant 조리법, int8h 세트)"
+served_name = "qwen3.8-27b"
+adapters = ["hyperqwen-8cf642e", "vllm-patched"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+files = [
+  { name = "chat_template.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", size = 8952 },
+  { name = "config.json", sha256 = "0419d5fa2634d5d8be24e94f6428f786d27f6d8072c6032de95a6b38b76b089f", size = 17055 },
+  { name = "generation_config.json", sha256 = "aa5b015977d69a40775670b8361c23ac798270ade267444eb8cffcd7f04462eb", size = 214 },
+  { name = "model-00001-of-00007.safetensors", sha256 = "a16e37645337070e5b0ad29845c30a4978a2ace55a4b47925db8ed99048c08c5", size = 3211003472 },
+  { name = "model-00002-of-00007.safetensors", sha256 = "4477d03b33cd3df6d0d4f1f1847c68bcb03575dbd1fd2883ad3845088f1ade0a", size = 3195027104 },
+  { name = "model-00003-of-00007.safetensors", sha256 = "5bd953894513ff658997adc06f75932d358d85d74a8d768c6ce7b3773aeb77ba", size = 3195027104 },
+  { name = "model-00004-of-00007.safetensors", sha256 = "5e9cc33fa252cdec42883793e2839f278f25f30dc9d8d062819c79d499d309e3", size = 3217442568 },
+  { name = "model-00005-of-00007.safetensors", sha256 = "5c9c112d3671ea4d298caacbcc09ac243ce638afdbc96e40ba26afba5129da47", size = 699275200 },
+  { name = "model-00006-of-00007.safetensors", sha256 = "1cf12480c4d0dfe818451436cbae36122fcb210b3adfb58ade4d74134c81693b", size = 1291274752 },
+  { name = "model-00007-of-00007.safetensors", sha256 = "fde4841f2bad2e8e43fdf85b45574056974915829a6f5b1f266c4d4113c72240", size = 1291264320 },
+  { name = "model.safetensors.index.json", sha256 = "5d44971af9922ef65755b0e9d2df64764cdf4f469fe5a841e4bc81e4ee46218a", size = 200180 },
+  { name = "model_extra_tensors.safetensors", sha256 = "326162eabe5eaa655fc3d005090536f0e5b51868199a2cea02668f716160e5b0", size = 644356792 },
+  { name = "mtp_draft_vocab_ids.json", sha256 = "e9794976c69695abb79458fde58d1f416de730e401deca7a275623e9ae003e09", size = 279256 },
+  { name = "preprocessor_config.json", sha256 = "0adb448101fcad74d4c5713f05270326885fe0c52c2eee0bf1e5331462ec95f6", size = 390 },
+  { name = "processor_config.json", sha256 = "762331886721710570474c11f32d66368a74f3735a3167e78f5ef447a5617240", size = 1191 },
+  { name = "quantization_config.json", sha256 = "e0cf4256c64d8215470d4fe7e6deb7fe1a84cc0cce8daa6ee9a4f2fbde4f7738", size = 11112 },
+  { name = "tokenizer.json", sha256 = "76a8d8ab694d412e59f68f08f8d44ea82a44e04310640d53323dcfbe111ba828", size = 19989325 },
+  { name = "tokenizer_config.json", sha256 = "46bddfae4e39ae1b9168ed51afa1cba5973e7f4499a84ea4869d9789e9b47a8e", size = 1164 },
+]
+
+[models.qwen38-27b-demo-w4a16q-int8h.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+[models.qwen38-27b-demo-w4a16q-int8h.hyperqwen]
+CTX = "long"
+SPEC = "mtp"
+
+[models.qwen38-27b-demo-w4a16q-bf16h]
+source = "home"
+dir = "qwen38-27b-demo-w4a16q-bf16h"
+mirror = { repo = "example-org/model-mirror", rev = "0123456789abcdef0123456789abcdef01234567" }   # HF 비공개 사본(읽기 토큰), 대조는 files
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체 + BF16 lm_head·임베딩·MTP(deploy/quant 조리법, bf16h 세트 — 공식 vLLM 그대로)"
+served_name = "qwen3.8-27b"
+adapters = ["vllm-patched", "vllm-stock"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+files = [
+  { name = "chat_template.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", size = 8952 },
+  { name = "config.json", sha256 = "6d6bbd2b62a3c15d50fdbc497cfccd2a73324f912075fadb9942d6a60611a142", size = 15305 },
+  { name = "generation_config.json", sha256 = "aa5b015977d69a40775670b8361c23ac798270ade267444eb8cffcd7f04462eb", size = 214 },
+  { name = "model-00001-of-00007.safetensors", sha256 = "a16e37645337070e5b0ad29845c30a4978a2ace55a4b47925db8ed99048c08c5", size = 3211003472 },
+  { name = "model-00002-of-00007.safetensors", sha256 = "4477d03b33cd3df6d0d4f1f1847c68bcb03575dbd1fd2883ad3845088f1ade0a", size = 3195027104 },
+  { name = "model-00003-of-00007.safetensors", sha256 = "5bd953894513ff658997adc06f75932d358d85d74a8d768c6ce7b3773aeb77ba", size = 3195027104 },
+  { name = "model-00004-of-00007.safetensors", sha256 = "5e9cc33fa252cdec42883793e2839f278f25f30dc9d8d062819c79d499d309e3", size = 3217442568 },
+  { name = "model-00005-of-00007.safetensors", sha256 = "5c9c112d3671ea4d298caacbcc09ac243ce638afdbc96e40ba26afba5129da47", size = 699275200 },
+  { name = "model-00006-of-00007.safetensors", sha256 = "c9477f6f7f6fecbf5d2317879549413cc62854802f0adb0a055c622444055410", size = 2542807272 },
+  { name = "model-00007-of-00007.safetensors", sha256 = "c0c0aa7df8325d109ef0a2dbe7dfd39eabb783508d9eb177b9bbb1584211f14c", size = 2542796896 },
+  { name = "model.safetensors.index.json", sha256 = "59001489378805090f133e0d1039e32c411949e25d675a5e34ea989b71801d42", size = 198291 },
+  { name = "model_extra_tensors.safetensors", sha256 = "be2d1d09d664a3eb6bd3a16d8d15b68d221e5ac9a24426429da752cab9b526c6", size = 849400392 },
+  { name = "preprocessor_config.json", sha256 = "0adb448101fcad74d4c5713f05270326885fe0c52c2eee0bf1e5331462ec95f6", size = 390 },
+  { name = "processor_config.json", sha256 = "762331886721710570474c11f32d66368a74f3735a3167e78f5ef447a5617240", size = 1191 },
+  { name = "quantization_config.json", sha256 = "e0cf4256c64d8215470d4fe7e6deb7fe1a84cc0cce8daa6ee9a4f2fbde4f7738", size = 11112 },
+  { name = "tokenizer.json", sha256 = "76a8d8ab694d412e59f68f08f8d44ea82a44e04310640d53323dcfbe111ba828", size = 19989325 },
+  { name = "tokenizer_config.json", sha256 = "46bddfae4e39ae1b9168ed51afa1cba5973e7f4499a84ea4869d9789e9b47a8e", size = 1164 },
+]
+
+[models.qwen38-27b-demo-w4a16q-bf16h.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+[models.qwen38-27b-demo2-w4a16-int8h]
+source = "home"
+dir = "qwen38-27b-demo2-w4a16-int8h"
+mirror = { repo = "example-org/model-mirror", rev = "0123456789abcdef0123456789abcdef01234567" }   # HF 비공개 사본(읽기 토큰), 대조는 files
+prepared = true        # 변환 8단계에서 HyperQwen prepare 를 거친 세트 — hyperqwen 차선이 prepare·verify 를 다시 돌리지 않는다
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체(중간 크기 17409 → 17536 0 채우기) + int8 lm_head·임베딩·MTP + draft head 40,960(int8h 세트)"
+served_name = "qwen3.8-27b"
+adapters = ["hyperqwen-8cf642e", "vllm-patched"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+files = [
+  { name = "chat_template.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", size = 8952 },
+  { name = "config.json", sha256 = "3ded90768fa561b4790063eb6daf1489df271aa76af2c796942c10dfbf8e5ab5", size = 17055 },
+  { name = "generation_config.json", sha256 = "aa5b015977d69a40775670b8361c23ac798270ade267444eb8cffcd7f04462eb", size = 214 },
+  { name = "model-00001-of-00007.safetensors", sha256 = "01e59e22c497d7a443bd13a6191d6283dc23d2353129e3745ad549bdb6c6825e", size = 3209118624 },
+  { name = "model-00002-of-00007.safetensors", sha256 = "0459594b4e615e5657382b23b0120bbff943de2544dc42b9afc10635ac96f0cd", size = 3183404992 },
+  { name = "model-00003-of-00007.safetensors", sha256 = "a68958287871da13ccd38e2a48e856a8921b73b6dd06baf7e12f366d9921cc18", size = 3211585184 },
+  { name = "model-00004-of-00007.safetensors", sha256 = "4a83bd6b54863151cb106c9d8a8996635e34d57f7e7141b5f9edead66ee951f1", size = 3218311368 },
+  { name = "model-00005-of-00007.safetensors", sha256 = "f040bc29d9f97f97f8c4672c267100d3719ffb4344e1b487e137686b447b12d3", size = 760235880 },
+  { name = "model-00006-of-00007.safetensors", sha256 = "1cf12480c4d0dfe818451436cbae36122fcb210b3adfb58ade4d74134c81693b", size = 1291274752 },
+  { name = "model-00007-of-00007.safetensors", sha256 = "fde4841f2bad2e8e43fdf85b45574056974915829a6f5b1f266c4d4113c72240", size = 1291264320 },
+  { name = "model.safetensors.index.json", sha256 = "7ab227e5f9bdc8a73af0f6eb75b4f7ae341e4ad0a69b3ca15ee6477eced80ce6", size = 200180 },
+  { name = "model_extra_tensors.safetensors", sha256 = "852c487b963d81eb52fa42fb116a56193464fd15526f724b54dbd56f8854297c", size = 646353592 },
+  { name = "mtp_draft_vocab_ids.json", sha256 = "e9794976c69695abb79458fde58d1f416de730e401deca7a275623e9ae003e09", size = 279256 },
+  { name = "preprocessor_config.json", sha256 = "0adb448101fcad74d4c5713f05270326885fe0c52c2eee0bf1e5331462ec95f6", size = 390 },
+  { name = "processor_config.json", sha256 = "762331886721710570474c11f32d66368a74f3735a3167e78f5ef447a5617240", size = 1191 },
+  { name = "quantization_config.json", sha256 = "e0cf4256c64d8215470d4fe7e6deb7fe1a84cc0cce8daa6ee9a4f2fbde4f7738", size = 11112 },
+  { name = "stewart_pad_report.json", sha256 = "b29d68715a82f1ed6e25b1be45408c8ff199d7b16ec1fef65615123009082bcb", size = 29384 },
+  { name = "tokenizer.json", sha256 = "76a8d8ab694d412e59f68f08f8d44ea82a44e04310640d53323dcfbe111ba828", size = 19989325 },
+  { name = "tokenizer_config.json", sha256 = "46bddfae4e39ae1b9168ed51afa1cba5973e7f4499a84ea4869d9789e9b47a8e", size = 1164 },
+]
+
+[models.qwen38-27b-demo2-w4a16-int8h.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+[models.qwen38-27b-demo2-w4a16-int8h.hyperqwen]
+CTX = "long"
+SPEC = "mtp"
+
+[models.qwen38-27b-demo2-w4a16-bf16h]
+source = "home"
+dir = "qwen38-27b-demo2-w4a16-bf16h"
+mirror = { repo = "example-org/model-mirror", rev = "0123456789abcdef0123456789abcdef01234567" }   # HF 비공개 사본(읽기 토큰), 대조는 files
+arch = "Qwen3_5ForConditionalGeneration"
+quant = "compressed-tensors"
+quant_note = "AutoRound W4A16 g128 대칭 본체(중간 크기 17409 → 17536 0 채우기) + BF16 lm_head·임베딩·MTP(bf16h 세트 — 공식 vLLM 그대로)"
+served_name = "qwen3.8-27b"
+adapters = ["vllm-patched", "vllm-stock"]
+patchset = "vllm-0.30.0"
+tp = 1
+vram_min_gb = 24
+chat_template_fix = ["translate"]
+backend_precision = "W4A16-AutoRound"
+chat_template = { file = "templates/qwen38-27b-chat.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041" }
+files = [
+  { name = "chat_template.jinja", sha256 = "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", size = 8952 },
+  { name = "config.json", sha256 = "a3a75006cac40f0321985226b30f80808435088d1401fbe40b7a0d40422dab5d", size = 15305 },
+  { name = "generation_config.json", sha256 = "aa5b015977d69a40775670b8361c23ac798270ade267444eb8cffcd7f04462eb", size = 214 },
+  { name = "model-00001-of-00007.safetensors", sha256 = "01e59e22c497d7a443bd13a6191d6283dc23d2353129e3745ad549bdb6c6825e", size = 3209118624 },
+  { name = "model-00002-of-00007.safetensors", sha256 = "0459594b4e615e5657382b23b0120bbff943de2544dc42b9afc10635ac96f0cd", size = 3183404992 },
+  { name = "model-00003-of-00007.safetensors", sha256 = "a68958287871da13ccd38e2a48e856a8921b73b6dd06baf7e12f366d9921cc18", size = 3211585184 },
+  { name = "model-00004-of-00007.safetensors", sha256 = "4a83bd6b54863151cb106c9d8a8996635e34d57f7e7141b5f9edead66ee951f1", size = 3218311368 },
+  { name = "model-00005-of-00007.safetensors", sha256 = "f040bc29d9f97f97f8c4672c267100d3719ffb4344e1b487e137686b447b12d3", size = 760235880 },
+  { name = "model-00006-of-00007.safetensors", sha256 = "c9477f6f7f6fecbf5d2317879549413cc62854802f0adb0a055c622444055410", size = 2542807272 },
+  { name = "model-00007-of-00007.safetensors", sha256 = "c0c0aa7df8325d109ef0a2dbe7dfd39eabb783508d9eb177b9bbb1584211f14c", size = 2542796896 },
+  { name = "model.safetensors.index.json", sha256 = "3d58d847a5764fbf6dbbe5efdb12b121a3f30925dfad2f5073722d7299dc8ab7", size = 198291 },
+  { name = "model_extra_tensors.safetensors", sha256 = "825213582773cd4bbcfe452e73f45e96efd4ca96976b2d6f6622a876b38eccd8", size = 853332552 },
+  { name = "preprocessor_config.json", sha256 = "0adb448101fcad74d4c5713f05270326885fe0c52c2eee0bf1e5331462ec95f6", size = 390 },
+  { name = "processor_config.json", sha256 = "762331886721710570474c11f32d66368a74f3735a3167e78f5ef447a5617240", size = 1191 },
+  { name = "quantization_config.json", sha256 = "e0cf4256c64d8215470d4fe7e6deb7fe1a84cc0cce8daa6ee9a4f2fbde4f7738", size = 11112 },
+  { name = "stewart_pad_report.json", sha256 = "b29d68715a82f1ed6e25b1be45408c8ff199d7b16ec1fef65615123009082bcb", size = 29384 },
+  { name = "tokenizer.json", sha256 = "76a8d8ab694d412e59f68f08f8d44ea82a44e04310640d53323dcfbe111ba828", size = 19989325 },
+  { name = "tokenizer_config.json", sha256 = "46bddfae4e39ae1b9168ed51afa1cba5973e7f4499a84ea4869d9789e9b47a8e", size = 1164 },
+]
+
+[models.qwen38-27b-demo2-w4a16-bf16h.serve]
+max_model_len = 150000
+gpu_memory_utilization = 0.93
+max_num_seqs = 8
+max_num_batched_tokens = 2048
+kv_cache_dtype = "fp8"
+mamba_ssm_cache_dtype = "float16"
+spec_method = "mtp"
+spec_tokens = 3
+prefix_cache = true
+cudagraph_max = 32
+language_model_only = true
+tool_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+sse_keep_alive = 30
+
+[plans.x1-01-eval]
+note = "X1-01 eval: 차선 0 모델 A(demo, hyperqwen prepare·품질), 1 orig-int8h(품질), 2 demo-int8h(품질), 3 orig-int8h"
+image = "hyperqwen"
+gpus = 4
+env = { CTX = "long", SPEC = "mtp", PREFIX_CACHE = "1", FAST_VARIANT = "0" }
+lanes = [
+  { model = "qwen38-27b-demo-w4a16", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-orig-w4a16q-int8h", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-demo-w4a16q-int8h", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-orig-w4a16q-int8h", adapter = "hyperqwen-8cf642e", quality = false },
+]
+
+[plans.x1-01-eval2]
+note = "X1-01 eval2: 차선 0 orig-int8h(품질), 1 demo-int8h(품질), 2 demo-int8h, 3 orig-int8h"
+image = "hyperqwen"
+gpus = 4
+env = { CTX = "long", SPEC = "mtp", PREFIX_CACHE = "1", FAST_VARIANT = "0" }
+lanes = [
+  { model = "qwen38-27b-orig-w4a16q-int8h", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-demo-w4a16q-int8h", adapter = "hyperqwen-8cf642e", quality = true },
+  { model = "qwen38-27b-demo-w4a16q-int8h", adapter = "hyperqwen-8cf642e", quality = false },
+  { model = "qwen38-27b-orig-w4a16q-int8h", adapter = "hyperqwen-8cf642e", quality = false },
+]
+

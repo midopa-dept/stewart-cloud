@@ -129,6 +129,59 @@ class TPad(unittest.TestCase):
         for s in ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"):
             ST.check_intact(d / s)
 
+    def test_pad_check(self):
+        """0 채우기 바이트 증명: 맞는 판은 통과, 늘어난 0 한 바이트·MLP 밖 텐서 한 바이트·config 칸 하나가 바뀌면 실패."""
+        import shutil
+        PC = _load("pad_check")
+        PAD.main(["--src", str(self.tmp / "src"), "--dst", str(self.tmp / "pad"), "--to", str(T)])
+        res = PC.check(self.tmp / "src", self.tmp / "pad", T)
+        self.assertTrue(res["ok"], res["bad"])
+        self.assertEqual(res["mlp_checked"], 9)                                          # 본체 2층 × 3 + MTP 1층 × 3
+        self.assertGreater(res["other_tensors_same"], 0)
+        self.assertEqual(set(res["config_changed"]), {"text_config.intermediate_size"} & set(res["config_changed"]) | set(res["config_changed"]))
+        self.assertTrue(set(res["config_changed"]) <= {"intermediate_size", "text_config.intermediate_size"})
+
+        def broken(name, edit):
+            d = self.tmp / name
+            shutil.copytree(self.tmp / "pad", d)
+            edit(d)
+            return PC.check(self.tmp / "src", d, T)
+
+        def flip_zero(d):                                                                 # 늘어난 0 영역(마지막 바이트)
+            shard = d / "model-00001-of-00002.safetensors"
+            b = bytearray(shard.read_bytes())
+            h, start = ST.read_header(shard)
+            meta = h["model.language_model.layers.0.mlp.up_proj.weight"]
+            b[start + meta["data_offsets"][1] - 1] ^= 0x01
+            shard.write_bytes(bytes(b))
+        r = broken("z", flip_zero)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("0 이 아니다" in x for x in r["bad"]), r["bad"])
+
+        def flip_other(d):                                                                # MLP 밖 텐서
+            shard = d / "model-00001-of-00002.safetensors"
+            b = bytearray(shard.read_bytes())
+            h, start = ST.read_header(shard)
+            name = next(k for k in h if k != "__metadata__" and ".mlp." not in k)
+            b[start + h[name]["data_offsets"][0]] ^= 0x01
+            shard.write_bytes(bytes(b))
+        r = broken("o", flip_other)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("바이트가 다르다" in x for x in r["bad"]), r["bad"])
+
+        def cfg_extra(d):
+            c = json.loads((d / "config.json").read_text())
+            c["rope_theta"] = 12345
+            (d / "config.json").write_text(json.dumps(c))
+        r = broken("c", cfg_extra)
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("intermediate_size 말고" in x for x in r["bad"]), r["bad"])
+        out = self.tmp / "pc.json"
+        rc = subprocess.run([sys.executable, str(ROOT / "pad_check.py"), "--src", str(self.tmp / "src"), "--dst", str(self.tmp / "z"),
+                             "--to", str(T), "--out", str(out)], capture_output=True, text=True).returncode
+        self.assertEqual(rc, 1)
+        self.assertFalse(json.loads(out.read_text())["ok"])
+
     def test_refuse(self):
         self.assertEqual(PAD.main(["--src", str(self.tmp / "src"), "--dst", str(self.tmp / "x"), "--to", "100"]), 2)
         with self.assertRaises(ValueError):
@@ -166,7 +219,8 @@ class TPad(unittest.TestCase):
         self.assertEqual(v, pv)                                                           # 바이트 그대로
         r = subprocess.run([sys.executable, str(ROOT / "graft_missing.py"), "--src", str(self.tmp / "pad"), "--dst", str(out)],
                            capture_output=True, text=True)
-        self.assertEqual(r.returncode, 1)                                                 # 두 번은 안 된다
+        self.assertEqual(r.returncode, 0, r.stderr)                                       # 다시 돌려도 대조만 하고 그대로
+        self.assertEqual((json.loads(r.stdout)["grafted"], json.loads(r.stdout)["verified_existing"]), (0, 3))
         # 빠진 모듈이 남으면 3
         out2 = self.tmp / "out2"
         out2.mkdir()
@@ -175,6 +229,64 @@ class TPad(unittest.TestCase):
         r = subprocess.run([sys.executable, str(ROOT / "graft_missing.py"), "--src", str(self.tmp / "pad"), "--dst", str(out2)],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 3)
+
+
+    def _quantized_like(self, out, extra: dict | None):
+        """양자화 결과 흉내(언어 MLP 는 weight_packed, mtp 없음). extra = auto-round 가 쓴 model_extra_tensors 내용."""
+        out.mkdir()
+        tens = {f"model.language_model.layers.{i}.mlp.{n}_proj.weight_packed": ([1], [1.0])
+                for i in (0, 1) for n in ("gate", "up", "down")}
+        tens |= {"model.language_model.embed_tokens.weight": ([1], [1.0]), "model.visual.blocks.0.mlp.linear_fc1.weight": ([1], [1.0])}
+        write_st(out / "model.safetensors", tens)
+        wm = {k: "model.safetensors" for k in tens}
+        if extra is not None:
+            write_st(out / GR.EXTRA, extra)
+            wm |= {k: GR.EXTRA for k in extra}
+        (out / "model.safetensors.index.json").write_text(json.dumps({"weight_map": wm}))
+
+    def _graft(self, out):
+        return subprocess.run([sys.executable, str(ROOT / "graft_missing.py"), "--src", str(self.tmp / "pad"), "--dst", str(out),
+                               "--prefix", "mtp.", "--prefix", "model.visual."], capture_output=True, text=True)
+
+    def test_graft_after_autoround_extra(self):
+        """auto-round 0.14.2 가 이미 model_extra_tensors 에 mtp 를 옮겼으면 대조만 하고 통과, 다르면 거부, 남은 것은 따로 담는다."""
+        PAD.main(["--src", str(self.tmp / "src"), "--dst", str(self.tmp / "pad"), "--to", str(T)])
+        shard = self.tmp / "pad" / "model-00002-of-00002.safetensors"
+        mtp = {f"mtp.layers.0.mlp.{n}_proj.weight": read_tensor(shard, f"mtp.layers.0.mlp.{n}_proj.weight") for n in ("gate", "up", "down")}
+        ok = self.tmp / "ok"
+        self._quantized_like(ok, mtp)
+        r = self._graft(ok)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        res = json.loads(r.stdout)
+        self.assertEqual((res["grafted"], res["verified_existing"], res["src_modules_missing_in_dst"]), (0, 3, 0))
+        self.assertEqual(sorted(p.name for p in ok.iterdir() if p.suffix == ".safetensors"), sorted(["model.safetensors", GR.EXTRA]))
+        # 값 하나가 다르면 거부
+        bad = dict(mtp)
+        shp, v = bad["mtp.layers.0.mlp.down_proj.weight"]
+        bad["mtp.layers.0.mlp.down_proj.weight"] = (shp, [v[0] + 1.0] + v[1:])
+        self._quantized_like(self.tmp / "bad", bad)
+        r = self._graft(self.tmp / "bad")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('"bytes": 1', r.stderr)
+        # 일부만 있으면 남은 것을 같은 파일에 합쳐 다시 쓴다(HyperQwen quant_mtp 는 MTP 가 한 파일이어야 한다)
+        part = {k: mtp[k] for k in ("mtp.layers.0.mlp.gate_proj.weight",)}
+        self._quantized_like(self.tmp / "part", part)
+        r = self._graft(self.tmp / "part")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        res = json.loads(r.stdout)
+        self.assertEqual((res["grafted"], res["file"], res["verified_existing"]), (2, GR.EXTRA, 1))
+        idx = json.loads((self.tmp / "part" / "model.safetensors.index.json").read_text())["weight_map"]
+        self.assertEqual({idx[k] for k in mtp}, {GR.EXTRA})
+        for k in mtp:                                                                     # 합친 파일도 원본과 같은 값
+            self.assertEqual(read_tensor(self.tmp / "part" / GR.EXTRA, k), mtp[k])
+        self.assertEqual(self._graft(self.tmp / "part").returncode, 0)                    # 다시 돌려도 대조만
+        # 색인이 파일에 없는 키를 가리키면 거부
+        self._quantized_like(self.tmp / "lie", part)
+        ip = self.tmp / "lie" / "model.safetensors.index.json"
+        d = json.loads(ip.read_text())
+        d["weight_map"]["mtp.layers.0.mlp.up_proj.weight"] = GR.EXTRA
+        ip.write_text(json.dumps(d))
+        self.assertEqual(self._graft(self.tmp / "lie").returncode, 1)
 
 
 class TRecipe(unittest.TestCase):
@@ -270,10 +382,10 @@ class TBundle(unittest.TestCase):
         pos = [sh.index(s) for s in order]
         self.assertEqual(pos, sorted(pos))
         self.assertLess(sh.index("export HF_HUB_OFFLINE=1"), sh.index("quantize_autoround.py"))   # 양자화는 오프라인
-        self.assertLess(sh.index("--max-mean-kl 1e-4"), sh.index("quantize_autoround.py"))        # 0 채우기 검사 통과 뒤에만
+        self.assertLess(sh.index('"$HERE/pad_check.py"'), sh.index("quantize_autoround.py"))      # 0 채우기 바이트 증명 통과 뒤에만
         loop = sh.index("done <<< \"$TARGETS\"")
         self.assertLess(sh.index("convert_target \"$alias\""), loop)                                # 대상마다 차례로, 감사는 쌍이 갖춰지면
-        self.assertLess(sh.index("run_audit\n"), loop)
+        self.assertLess(sh.index('"$tpl"; run_audit )'), loop)                                    # 대상마다 가둔 하위 셸 안에서 감사
         self.assertIn('in_audit "$alias" || rm -rf "$SRC"', sh)                                    # 감사 쌍의 원본은 감사 뒤에 지운다
         self.assertLess(sh.index('mark audit'), sh.index('step "$x/6-quant" && rm -rf "$(src_of "$x")"'))
         body = sh[sh.index("convert_target() {"):sh.index("in_audit() {")]
@@ -322,7 +434,7 @@ class TBundle(unittest.TestCase):
         self.assertFalse([ln for ln in code if "HF_TOKEN" in ln and not ln.lstrip().startswith("log ")])  # 토큰을 다루지 않는다
         self.assertIn("unset CONTAINER_API_KEY", sh)
         self.assertLess(sh.index("unset CONTAINER_API_KEY"), sh.index("pip install"))
-        self.assertIn("stop_instance", sh.split("halt()")[1].split("\n")[0])                         # HALT 면 정지
+        self.assertIn("stop_instance", sh.split("\nhalt() {")[1].split("\n}")[0])                     # HALT 면 정지(v13: 여러 줄)
         self.assertIn('MAXH=${MAX_HOURS:-$(( 4 * NT + 2 ))}', sh)                                   # 최대 켜짐 감시(대상 수만큼)
         self.assertIn('sleep "$(( MAXH * 3600 ))"', sh)
         self.assertLess(sh.index("MAX_HOURS"), sh.index("mark 0-image"))
@@ -331,8 +443,20 @@ class TBundle(unittest.TestCase):
         self.assertLess(sh.index("unset TS_AUTHKEY"), sh.index('"$Q/bin/tailscaled"'))             # 키를 환경에서 지운 뒤에 데몬
         self.assertIn("--hostname=stewart-quant", sh)
         self.assertLess(sh.index("quantsrv.py"), sh.index("mark 0-image"))                         # 진행 중에도 /status
-        self.assertIn("step exported", sh)
-        self.assertLess(sh.index("mark 11-export"), sh.index("step exported"))
+        self.assertLess(sh.index("mark 11-export"), sh.rindex('wait_export "$Q"'))                 # 끝의 받기 대기
+        self.assertIn('wait_export "$Q"', sh.split("\nhalt() {")[1].split("\n}")[0])                    # HALT 도 열린 세트는 받기를 기다린다
+        loop = sh[sh.index("while read -r alias repo rev pins pad tpl"):sh.index('done <<< "$TARGETS"')]
+        self.assertIn("set +e", loop)                                                              # 대상마다 가두기(하위 셸 안 set -e)
+        self.assertIn("( set -eE; trap ", loop)                                                    # v13: 실패 이유 줄(ERR trap)
+        self.assertIn('halt() { trap - ERR; log "HALT: $*"; exit 3; }', loop)
+        self.assertNotIn(") || rc=", "\n".join(ln for ln in loop.splitlines() if not ln.lstrip().startswith("#")))  # 안쪽 set -e 를 끄는 꼴
+        self.assertIn("export_now", loop)                                                          # 대상이 끝날 때마다 내보내기 갱신
+        self.assertIn("pad_check.py", sh)
+        self.assertNotIn("--max-mean-kl 1e-4", sh)                                                 # 0 채우기 문턱은 바이트 증명
+        r = sh[sh.index("# ---- 이어 하기:"):sh.index("# ---- 1. 도구")]
+        self.assertLess(r.index("import_wait ||"), r.index("import_move"))                         # 대조(import_wait 안) 뒤에만 옮기고
+        self.assertIn("if import_verify; then return 0; fi", sh)
+        self.assertLess(r.index("import_move"), r.index("export_now"))                             # 옮긴 뒤 바로 내보낸다
 
 
 class TExport(unittest.TestCase):
@@ -427,6 +551,159 @@ class TExport(unittest.TestCase):
         r = LOCAL.open(urllib.request.Request(f"http://127.0.0.1:{sp}/logout", data=b"", method="POST"), timeout=5)
         self.assertEqual(json.loads(r.read())["ok"], True)
 
+
+    def test_quantsrv_sets_received_twice(self):
+        """/export 는 받았다고 알리지 않은 세트만 보인다. 끝난 대상부터 한 번, 나중에 끝난 대상을 또 한 번 받는다."""
+        import socket
+        import urllib.error
+        import urllib.request
+
+        def free():
+            with socket.socket() as so:
+                so.bind(("127.0.0.1", 0))
+                return so.getsockname()[1]
+        sp, ep = free(), free()
+        ctx = QS.Ctx(self.q, "100.64.0.9", None)
+        srvs = QS.serve(ctx, "127.0.0.1", sp, ep)
+        self.addCleanup(lambda: [x.shutdown() for x in srvs])
+        get = lambda port, path: json.loads(LOCAL.open(f"http://127.0.0.1:{port}{path}", timeout=5).read())
+        post = lambda: json.loads(LOCAL.open(urllib.request.Request(f"http://127.0.0.1:{ep}/export/done", data=b"", method="POST"),
+                                             timeout=5).read())
+        with self.assertRaises(urllib.error.HTTPError) as cm:                    # GET 없이 done 은 안 된다
+            post()
+        self.assertEqual(cm.exception.code, 409)
+        self.build()
+        first = [x["alias"] for x in get(ep, "/export")["sets"]]
+        self.assertEqual(len(first), 4)
+        LOCAL.open(f"http://127.0.0.1:{ep}/export/{first[1]}/model-00001.safetensors", timeout=5).read()
+        self.assertTrue((self.q / "export-active").exists())                    # 보내는 동안 받는 활동 표시
+        self.assertEqual(post()["acknowledged"], sorted(first))
+        self.assertTrue((self.q / "done" / "exported").exists())
+        with self.assertRaises(urllib.error.HTTPError) as cm:                    # 다 받았으면 보일 세트가 없다
+            LOCAL.open(f"http://127.0.0.1:{ep}/export", timeout=5)
+        self.assertEqual(cm.exception.code, 409)
+        # 나중에 끝난 대상이 export.json 에 더해지면 그것만 보인다
+        idx = json.loads((self.q / "export.json").read_text())
+        extra = dict(idx["sets"][0], alias="qwen38-27b-later-w4a16q-bf16h")
+        idx["sets"].append(extra)
+        (self.q / "export.json").write_text(json.dumps(idx))
+        (self.q / "done" / "exported").unlink()
+        second = [x["alias"] for x in get(ep, "/export")["sets"]]
+        self.assertEqual(second, ["qwen38-27b-later-w4a16q-bf16h"])
+        body = LOCAL.open(f"http://127.0.0.1:{ep}/export/{first[1]}/model-00001.safetensors", timeout=5).read()
+        self.assertEqual(body, b"w" * 5000)                                     # 받은 세트의 파일도 계속 내준다
+        self.assertEqual(post()["acknowledged"], sorted(first + second))
+        self.assertTrue((self.q / "done" / "exported").exists())
+        self.assertEqual(get(sp, "/status")["acknowledged"], sorted(first + second))
+
+
+class TResumeFns(unittest.TestCase):
+    """run-convert 의 내보내기 함수(복사 판정·대조·옮기기·받지 않은 세트·받기 대기)를 떼어 bash 로 돈다."""
+
+    def setUp(self):
+        import hashlib
+        import shutil
+        self.d = Path(tempfile.mkdtemp())
+        self.q, self.im = self.d / "q", self.d / "import"
+        self.bin = self.d / "bin"
+        self.bin.mkdir()
+        sh = (ROOT / "run-convert.sh").read_text()
+        a = sh.index("# ---- 내보내기 함수(시험이 떼어 돈다) ----")
+        b = sh.index("# ---- 내보내기 함수 끝 ----")
+        self.block = sh[a:b]
+        if not shutil.which("sha256sum", path="/usr/bin:/bin"):                  # 맥: shasum 으로 대신(-c·--quiet·--strict 만)
+            (self.bin / "sha256sum").write_text("#!/bin/sh\nargs=\"\"\nfor a in \"$@\"; do case \"$a\" in --quiet|--strict) ;; "
+                                                "*) args=\"$args $a\";; esac; done\nexec /usr/bin/shasum -a 256 $args\n")
+            (self.bin / "sha256sum").chmod(0o755)
+        a_ = "qwen38-27b-orig-w4a16q"
+        for d, files in (("out-bf16heads", {"config.json": b"{}", "model-00001.safetensors": b"w" * 3000}),
+                         ("out-int8heads", {"config.json": b"{ }", "model-00001.safetensors": b"v" * 3000})):
+            p = self.im / "t" / a_ / d
+            p.mkdir(parents=True)
+            for n, c in files.items():
+                (p / n).write_bytes(c)
+            (self.im / "t" / a_ / f"{d}.sha256").write_text("".join(f"{hashlib.sha256(c).hexdigest()}  {n}\n"
+                                                                     for n, c in sorted(files.items())))
+        (self.im / "done" / a_).mkdir(parents=True)
+        for m in ("2-src", "6-quant", "9-serve-quality", "11-built"):
+            (self.im / "done" / a_ / m).touch()
+        self.alias = a_
+
+    def run_fn(self, body: str, env: dict | None = None):
+        script = (f"set -euo pipefail\nPY={sys.executable}\nQ={self.q}\nIMQ={self.im}\nRESUME_FIRST={self.alias}\n"
+                  f"LOGF={self.d}/log\nlog() {{ printf '%s\\n' \"$*\" >> \"$LOGF\"; }}\n" + self.block + "\n" + body + "\n")
+        e = {"PATH": f"{self.bin}:/usr/bin:/bin", **(env or {})}
+        r = subprocess.run(["bash", "-c", script], env=e, capture_output=True, text=True, timeout=60)
+        log = (self.d / "log").read_text() if (self.d / "log").exists() else ""
+        return r, log
+
+    def test_import_ready_verify_move(self):
+        r, _ = self.run_fn("import_ready && import_verify && echo READY")
+        self.assertIn("READY", r.stdout, r.stderr)
+        r1, _ = self.run_fn("import_sizes")
+        r2, _ = self.run_fn("import_sizes")
+        self.assertEqual(r1.stdout, r2.stdout)
+        self.assertIn("model-00001.safetensors 3000", r1.stdout)
+        r, _ = self.run_fn("import_move && ls $Q/t/" + self.alias + " && ls $Q/done/" + self.alias)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.q / "t" / self.alias / "out-int8heads" / "config.json").exists())
+        self.assertTrue((self.q / "done" / self.alias / "11-built").exists())
+        self.assertFalse((self.im / "t" / self.alias).exists())
+
+    def test_import_not_ready_or_partial(self):
+        p = self.im / "t" / self.alias / "out-bf16heads"
+        (p / ".model-00001.safetensors.Xy12").write_bytes(b"w")                 # rsync 가 받는 중인 임시 파일
+        r, _ = self.run_fn("import_ready && echo READY || echo NOT")
+        self.assertIn("NOT", r.stdout)
+        (p / ".model-00001.safetensors.Xy12").unlink()
+        (p / "model-00001.safetensors").write_bytes(b"w" * 1000)                # 짧게 들어온 파일: 판정은 지나도 대조에서 막힌다
+        r, _ = self.run_fn("import_ready && echo READY; import_verify && echo OK || echo BAD")
+        self.assertIn("READY", r.stdout)
+        self.assertIn("BAD", r.stdout)
+        (self.im / "done" / self.alias / "11-built").unlink()                   # 표시가 아직 안 왔으면
+        r, _ = self.run_fn("import_ready && echo READY || echo NOT")
+        self.assertIn("NOT", r.stdout)
+
+    def fakes(self, age: int, ack_after: int | None = None):
+        (self.bin / "date").write_text("#!/bin/sh\necho 1000000\n")
+        (self.bin / "stat").write_text(f"#!/bin/sh\necho {1000000 - age}\n")
+        ack = (f"[ \"$n\" -ge {ack_after} ] && echo '[\"s-a\", \"s-b\"]' > {self.q}/done/exported-sets.json\n"
+               if ack_after else "")
+        (self.bin / "sleep").write_text(f"#!/bin/sh\nn=$(( $(cat {self.d}/n 2>/dev/null || echo 0) + 1 )); echo $n > {self.d}/n\n"
+                                        + ack + "exit 0\n")
+        for f in ("date", "stat", "sleep"):
+            (self.bin / f).chmod(0o755)
+        (self.q / "done").mkdir(parents=True, exist_ok=True)
+        (self.q / "export.json").write_text(json.dumps({"version": 1, "sets": [{"alias": "s-a"}, {"alias": "s-b"}]}))
+
+    def sleeps(self):
+        p = self.d / "n"
+        return int(p.read_text()) if p.exists() else 0
+
+    def test_pending_and_wait_export(self):
+        self.fakes(age=999)
+        (self.q / "done" / "exported-sets.json").write_text('["s-a"]')
+        r, _ = self.run_fn('pending_sets "$Q"')
+        self.assertEqual(r.stdout.strip(), "s-b")
+        r, log = self.run_fn('wait_export "$Q"', {"EXPORT_WAIT_MIN": "3"})       # 받는 활동 없음 → 3분 세고 끝
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("받기 대기 끝(받지 않은 세트: s-b)", log)
+        self.assertEqual(self.sleeps(), 2)
+
+    def test_wait_export_all_received(self):
+        self.fakes(age=999)
+        (self.q / "done" / "exported-sets.json").write_text('["s-a", "s-b"]')
+        r, log = self.run_fn('wait_export "$Q"', {"EXPORT_WAIT_MIN": "3"})
+        self.assertIn("받기 대기 끝(받지 않은 세트: )", log)
+        self.assertEqual(self.sleeps(), 0)
+
+    def test_wait_export_extends_while_receiving(self):
+        self.fakes(age=10, ack_after=6)                                         # 받는 중(10초 전 활동): 2분 상한이어도 기다린다
+        (self.q / "export-active").touch()
+        r, log = self.run_fn('wait_export "$Q"', {"EXPORT_WAIT_MIN": "2"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("받기 대기 끝(받지 않은 세트: )", log)
+        self.assertEqual(self.sleeps(), 6)
 
 if __name__ == "__main__":
     unittest.main()

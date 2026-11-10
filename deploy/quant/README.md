@@ -75,6 +75,39 @@
 
 `deploy/modelstore/README.md` 의 흐름을 따른다: `sudo modelstore pull stewart-quant…` → `sudo modelstore promote … <별칭>`.
 
+## 셸 비상구와 손으로 이어 가기(v13)
+
+- 이 인스턴스는 `tailscale up --ssh` 로 붙는다. 집(테일넷 ACL 의 ssh 규칙이 허락한 쪽 — 보관 서버 tag:server 등)에서
+  `tailscale ssh root@<로그의 tailscale name 줄 이름>` 으로 root 셸에 들어온다. 키 파일은 없다(테일넷 신원).
+  이 인스턴스에서 집으로 여는 연결은 그대로 없다(ACL 에 tag:gpu 를 src 로 하는 허락이 없다).
+  `--ssh` 가 안 되면 로그에 "tailscale up --ssh 실패 — 셸 비상구 없이 붙는다" 를 남기고 그냥 붙는다.
+- HALT 했을 때(열린 세트가 없고 테일넷이 붙은 뒤): 켜진 채 `HALT_HOLD_MIN`(60)분 사람을 기다린다. 그동안
+  - `touch /workspace/quant/hold` — 지울 때까지 더 기다린다(HALT 부터 `HALT_HOLD_MAX_MIN` 360분 상한, A100 1.7 $/hr 로 약 $10)
+  - `touch /workspace/quant/rerun` — run-convert.sh 를 처음부터 다시(단계 표시로 이어서, 고친 `files/` 로). 테일넷·quantsrv 는 그대로 쓴다
+  - `touch /workspace/quant/stop-now` — 바로 정지
+  - export.json 이 생기면(아래 손 내보내기) 받기로 넘어가 집이 다 받거나 받는 활동 없이 120분이면 정지
+- 손 절차는 묶음 안 스크립트로 친다(v13.1 — 시험대 tests/test_run_convert.py TV131 에서 그대로 돌린 것):
+  - 손 내보내기: `bash /workspace/quant/files/manual-export.sh` — 받은 세트를 10단계 sha 로 대조(VERIFY-OK) → `$Q/t` 로 옮김(MOVED)
+    → 단계 표시 → export.json → 맨 끝 `EXPORT-OK`(앞이 다 지났을 때만). 하나라도 실패하면 그 자리에서 멈추고 아무것도 덮지 않는다.
+  - 손으로 이어 가기: `bash /workspace/quant/files/manual-continue.sh` — 지금 도는 run-convert 를 멈춰 두고(STOP, 끄지 않음 —
+    끄면 부모 boot 가 900초 뒤 장비를 끈다) 같은 컨테이너에서 새 판을 띄운다. 자기·부모 셸은 빼고 멈춘다(pkill -f 가 ssh 셸까지 멈춘 일이 있었다).
+    새 판 출력은 컨테이너 로그로 간다(래퍼 logs 로 보인다). 표지 `STOPPED <pid…>` → `STARTED <pid>` → `CONTINUE-OK`.
+  - 집에서 들어가는 줄: `ssh root@<이름>.<테일넷>.ts.net`(Tailscale SSH — ACL 의 ssh 규칙이 허락한 쪽만).
+- 복사 받기 판정(v13.1): 복사 중에는 `/workspace/import` 안을 이름으로 찾지 않는다(목록만 읽는다). 실제로 판정이 없는
+  done 을 이름으로 찾아 둔 사이 호스트 쪽 rsync(copy_direct)가 done 을 만들자 겹친 파일 시스템이 "없음"을 기억해 ESTALE 이 됐다(짐작).
+  판정이 막히면 10분 진행 줄에 첫 이유("판정: 없음: done/…", "ESTALE …")를 찍는다. ESTALE 은 컨테이너를 다시 켜면(stop → start) 풀린다.
+- 테일넷 길(v13.1): 템플릿이 `-p 70000:70000/udp` 를 열고, tailscaled 를 Vast 가 준 `VAST_UDP_PORT_70000` 로 띄워 `PUBLIC_IPADDR:그 포트`
+  를 광고한다(장비는 대칭 NAT). 부팅 1분 뒤 "tailscale 길(보관 서버 …): … direct|relay" 한 줄. 직결이 중계보다 느리면(먼 지역 사이)
+  `touch /workspace/quant/ts-relay` 뒤 컨테이너를 다시 켜면 무작위 포트(중계)로 붙는다.
+- 받기(modelstore pull, v13.1): `.part` 가 있으면 그 뒤부터 이어 받는다(quantsrv 가 Range 를 받는다). 평균 속도 문턱은 없애고
+  (min_rate_Bps 0), 읽기가 stall_s(300)초 동안 0 바이트면 끊는다 — 다시 치면 잇는다. 파일마다 "처음 30초 N MB/s" 한 줄.
+- 위험과 좁힌 것: 들어오는 쪽이 root 셸을 얻는다. 장비에 있는 것은 변환 결과·HF 공개 모델·이 인스턴스 범위의 Vast 키
+  (/dev/shm/vast-key — 이 인스턴스 정지·삭제)·테일넷 노드 상태다. 쓰기 토큰·집의 비밀은 없다.
+  들어올 수 있는 쪽은 ACL 의 ssh 규칙(src)만이다. 보관 서버 테일넷 신원이 새면 그 쪽이 빌린 장비에 root 로 들어올 수 있다
+  — 장비에서 집으로는 여전히 못 나온다.
+- 정의 차례 시험: `tests/shell_order.py`(함수·전역 변수가 쓰이는 줄보다 앞에서 정의되는지, trap 문자열 포함) 와
+  `tests/test_run_convert.py`(run-convert.sh 실물을 처음부터 끝까지, 집 쪽은 modelpush pull·promote 실물).
+
 ## 묶음
 
 `uv run python deploy/quant/make_quant_bundle.py --out <폴더>` 로 만듭니다.

@@ -53,6 +53,25 @@ serving_fetch() {
   # home 별칭: 받는 창구(modelrecv.py)를 127.0.0.1:<recv_port> 에 열고 보관 서버가 밀어 넣기를 기다린다.
   # 사용자 공간 Tailscale 이 테일넷 :<recv_port> 를 그리로 넘긴다. 파드 → 집 연결은 없다. 못 받으면 HALT(→ 인스턴스 정지).
   if [ "$M_SOURCE" = home ]; then
+    # T35: HF 비공개 사본(mirror)이 표에 있고 읽기 토큰 파일(HF_READ_FILE, pod-start 0절)이 있으면 먼저 거기서 받는다.
+    # 토큰은 파일 경로로만 넘긴다(HF_TOKEN_PATH — 환경·명령 줄에 값이 없다). 받은 뒤 대조는 home 과 같은 files 목록.
+    # 못 받으면(망·권한) 그 줄을 남기고 집에서 밀어 넣기(modelrecv)로 간다.
+    if [ "$(cat "$MDIR/.stewart-rev" 2>/dev/null)" != "$M_REV" ] && [ -n "${M_MIRROR_REPO:-}" ] && [ -s "${HF_READ_FILE:-/nonexistent}" ]; then
+      local mrc=0 mdl="$S/mirror-dl"
+      log "model-fetch hf-mirror alias=$M_ALIAS repo=$M_MIRROR_REPO@${M_MIRROR_REV:0:12}"
+      rm -rf "$mdl"
+      HF_TOKEN_PATH="$HF_READ_FILE" HF_HUB_OFFLINE=0 $HF download "$M_MIRROR_REPO" --repo-type model --revision "$M_MIRROR_REV" \
+        --include "$M_ALIAS/*" --local-dir "$mdl" >>"$S/mirror.log" 2>&1 || mrc=$?
+      if [ "$mrc" = 0 ] && [ -d "$mdl/$M_ALIAS" ]; then
+        mkdir -p "$MDIR"
+        find "$mdl/$M_ALIAS" -maxdepth 1 -type f -not -name '.*' -exec mv -f {} "$MDIR/" \;
+        rm -rf "$mdl"
+        pin_check "$MDIR" "$($PY "$SV/serving.py" pins "$M_ALIAS")" "$M_ALIAS(hf-mirror)"
+        echo "$M_REV" > "$MDIR/.stewart-rev"
+      else
+        log "model-fetch hf-mirror 실패 rc=$mrc($M_ALIAS, mirror.log 끝: $(tail -n1 "$S/mirror.log" 2>/dev/null | cut -c1-160)) — 집에서 받기로"
+      fi
+    fi
     if [ "$(cat "$MDIR/.stewart-rev" 2>/dev/null)" != "$M_REV" ]; then
       local hip hport htmo rc=0
       read -r hip hport htmo < <($PY "$SV/serving.py" home)
@@ -140,8 +159,8 @@ if os.path.exists(p):
 PYEOF
     log "chat-template pinned $M_CHAT_TPL sha=${M_CHAT_TPL_SHA:0:12}"
   fi
-  # 채팅 틀 손질(hyperqwen 어댑터는 자기 prepare 가 한다). 표의 chat_template_fix 만
-  if [ "$M_ADAPTER" != hyperqwen-8cf642e ]; then
+  # 채팅 틀 손질(hyperqwen 어댑터는 자기 prepare 가 한다 — prepared 별칭은 prepare 를 다시 돌리지 않으므로 여기서). 표의 chat_template_fix 만
+  if [ "$M_ADAPTER" != hyperqwen-8cf642e ] || [ "${M_PREPARED:-0}" = 1 ]; then
     for f in $M_CHAT_FIX; do
       case "$f" in
         # 실패(가져오기 오류 등)를 로그 한 줄로 흘려보내지 않는다 — 틀을 못 고친 채 서빙하지 않고 멈춘다

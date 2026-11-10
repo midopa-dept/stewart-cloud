@@ -51,7 +51,7 @@ SERVE_KEYS = {"max_model_len": int, "gpu_memory_utilization": float, "max_num_se
               "reasoning_parser": str, "sse_keep_alive": int, "attention_backend": str}
 MODEL_KEYS = {"source", "files", "repo", "rev", "dir", "pins", "arch", "quant", "quant_note", "served_name", "adapters", "patchset", "tp",
               "vram_min_gb", "chat_template_fix", "backend_precision", "fast", "serve", "hyperqwen",
-              "pending", "quant_src", "chat_template"}
+              "pending", "quant_src", "chat_template", "prepared", "mirror"}
 QUANT_SRC_KEYS = {"repo", "rev", "pins", "pad_to", "order"}
 LANE_KEYS = {"model", "adapter", "quality", "spec"}
 LANE_SPECS = ("mtp", "off")          # 차선 하나의 추측 디코딩(없으면 계획·표 값)
@@ -223,6 +223,17 @@ def validate(t: dict, base: Path = HERE) -> list[str]:
             errs.append(f"{name}: chat_template_fix 는 {CHAT_FIXES} 중에서")
         if not isinstance(m.get("pending", False), bool) or (m.get("pending") and src != "home"):
             errs.append(f"{name}: pending 은 home 별칭의 true|false")
+        # prepared = 이미 HyperQwen prepare(int8 head·draft)를 거친 세트(우리 변환의 int8h). hyperqwen 어댑터가
+        # prepare·verify 를 다시 돌리지 않고(PREPARE=0 VERIFY=0 start_qwen.sh) 어느 차선에서나 띄운다
+        if not isinstance(m.get("prepared", False), bool) or (m.get("prepared") and "hyperqwen-8cf642e" not in ad):
+            errs.append(f"{name}: prepared 는 hyperqwen 어댑터가 있는 별칭의 true|false")
+        # T35: mirror = home 세트의 HF 비공개 사본(파드가 읽기 전용 토큰으로 받는다 — 집 → 파드 테일넷이 느릴 때).
+        # 받은 뒤 대조는 files(home 과 같은 세기). 저장소 안 자리는 <별칭>/
+        if "mirror" in m:
+            mr = m["mirror"] if isinstance(m["mirror"], dict) else {}
+            if src != "home" or set(mr) != {"repo", "rev"} or not REPO_RE.match(str(mr.get("repo", ""))) \
+                    or not REV_RE.match(str(mr.get("rev", ""))):
+                errs.append(f"{name}: mirror 는 home 별칭의 {{repo, rev(커밋 40자)}}")
         _chat_template_ok(base, m.get("chat_template"), errs, name)
         _quant_src_ok(m.get("quant_src"), errs, name)
         if src == "hf":
@@ -276,12 +287,13 @@ def validate(t: dict, base: Path = HERE) -> list[str]:
                 errs.append(f"계획 {pn} 차선 {i}: 그 모델이 허락하지 않는 어댑터 {ln.get('adapter')}")
             elif pl.get("image") not in ADAPTER_IMAGES[ln["adapter"]]:
                 errs.append(f"계획 {pn} 차선 {i}: 어댑터 {ln['adapter']} 는 이미지 {pl.get('image')} 에서 못 돈다")
-            if ln.get("adapter") == "hyperqwen-8cf642e" and i != 0 and (lanes[0].get("adapter") != "hyperqwen-8cf642e"
-                                                                         or lanes[0].get("model") != ln.get("model")):
+            lm = models.get(ln.get("model")) or {}
+            if ln.get("adapter") == "hyperqwen-8cf642e" and i != 0 and not lm.get("prepared") and (
+                    lanes[0].get("adapter") != "hyperqwen-8cf642e" or lanes[0].get("model") != ln.get("model")):
                 # prepare·verify 는 차선 0 만 돈다(k≥1 hyperqwen 은 PREPARE=0 VERIFY=0 start_qwen.sh — serve_cmd). 그래서
                 # hyperqwen 차선이 있으면 차선 0 이 같은 모델의 hyperqwen 이어야 한다(T23 a-x4: 네 차선 모두 hyperqwen)
                 errs.append(f"계획 {pn} 차선 {i}: hyperqwen 어댑터는 차선 0 만이거나, 차선 0 이 같은 모델의 hyperqwen 일 때만"
-                            "(prepare·verify 를 차선 0 이 돈다)")
+                            "(prepare·verify 를 차선 0 이 돈다 — prepared 별칭은 예외)")
             if set(ln) - LANE_KEYS:
                 errs.append(f"계획 {pn} 차선 {i}: 모르는 칸 {sorted(set(ln) - LANE_KEYS)}")
             need += m.get("tp", 1)
@@ -423,8 +435,10 @@ def select_env(t: dict, alias: str, want: str, image_kind: str) -> dict[str, str
            "M_SPEC": str(m["hyperqwen"]["SPEC"] if a == "hyperqwen-8cf642e" else (m.get("serve") or {}).get("spec_method", "")),
            "M_CHAT_TPL": str((m.get("chat_template") or {}).get("file", "")),
            "M_CHAT_TPL_SHA": str((m.get("chat_template") or {}).get("sha256", ""))}
+    mr = m.get("mirror") or {}
+    env |= {"M_MIRROR_REPO": str(mr.get("repo", "")), "M_MIRROR_REV": str(mr.get("rev", ""))}
     if a == "hyperqwen-8cf642e":
-        env |= {"M_HQ_CTX": m["hyperqwen"]["CTX"], "M_HQ_SPEC": m["hyperqwen"]["SPEC"]}
+        env |= {"M_HQ_CTX": m["hyperqwen"]["CTX"], "M_HQ_SPEC": m["hyperqwen"]["SPEC"], "M_PREPARED": "1" if m.get("prepared") else "0"}
         if m.get("fast"):
             env |= {"M_FAST_REPO": m["fast"]["repo"], "M_FAST_REV": m["fast"]["rev"], "M_FAST_PINS": m["fast"]["pins"],
                     "M_FAST_FILES": " ".join(m["fast"]["files"])}
@@ -496,7 +510,9 @@ def serve_cmd(t: dict, env_file: Path, lane: int, port: int, base_env: dict[str,
     models_root = base_env.get("STEWART_MODELS", "/workspace/stewart/models")
     mdir = f"{models_root}/{m['dir']}"
     env = dict(base_env)
-    env |= {"PORT": str(port), "HOST": "127.0.0.1", "VLLM_NO_USAGE_STATS": "1", "DO_NOT_TRACK": "1"}
+    # 지난 요청 글을 서버가 쥐지 않게 — Responses API 저장(GET /v1/responses/{id} 로 되읽힘)을 끈다(기본도 꺼짐, 드러내 둔다)
+    env |= {"PORT": str(port), "HOST": "127.0.0.1", "VLLM_NO_USAGE_STATS": "1", "DO_NOT_TRACK": "1",
+            "VLLM_ENABLE_RESPONSES_API_STORE": "0"}
     a = e["M_ADAPTER"]
     lane_spec = e.get("M_LANE_SPEC", "")
     if a == "hyperqwen-8cf642e":
@@ -504,7 +520,7 @@ def serve_cmd(t: dict, env_file: Path, lane: int, port: int, base_env: dict[str,
         env |= {"MODEL": mdir + ("-fast" if fast else ""), "BASE_MODEL_DIR": mdir, "HF_REPO": m.get("repo", ""),
                 "CTX": base_env.get("CTX", e["M_HQ_CTX"]), "SPEC": lane_spec or base_env.get("SPEC", e["M_HQ_SPEC"]),
                 "DFLASH2": "0", "FAST_VARIANT": "1" if fast else "0"}
-        if lane == 0:
+        if lane == 0 and not m.get("prepared"):
             return ["bash", "/app/docker/entrypoint.sh", "single"], env
         env |= {"PREPARE": "0", "VERIFY": "0"}
         return ["bash", "/app/single-user/start_qwen.sh"], env

@@ -268,5 +268,20 @@ class TFiles(unittest.TestCase):
         self.assertEqual(json.loads((d / "config.example.json").read_text())["port"], 8090)
 
 
+class TPadCheckRule(unittest.TestCase):
+    """열린 결정 a: pad_check_replaces_kl 가 켜져 있고 바이트 증명이 ok 면 0 채우기 KL 문턱을 건너뛴다(기본은 꺼짐)."""
+
+    def test_rule(self):
+        th = MP.load_config(None)["thresholds"]
+        rep = {"pad_to": 17536, "kl_pad": {"mean_kl": 6.57e-4, "top1_agree": 0.98975}, "pad_check": {"ok": True},
+               "kl_quant_bf16heads": {"mean_kl": 0.04, "top1_agree": 0.92}, "verify": {"ok": True}, "quality": {"ok": True}}
+        self.assertFalse(th["pad_check_replaces_kl"])
+        self.assertTrue(any("0 채우기 KL" in b for b in MP.check_report(rep, th)))          # 기본: 지금처럼 걸린다
+        th2 = dict(th, pad_check_replaces_kl=True)
+        self.assertEqual(MP.check_report(rep, th2), [])                                     # 켜면 바이트 증명이 대신한다
+        self.assertTrue(MP.check_report(dict(rep, pad_check={"ok": False}), th2))            # 증명 실패면 그대로 문턱
+        self.assertTrue(MP.check_report(dict(rep, pad_check=None), th2))                     # 증명이 없는 옛 보고도
+
+
 if __name__ == "__main__":
     unittest.main()

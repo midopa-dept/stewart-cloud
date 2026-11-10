@@ -56,7 +56,7 @@ Rentals are billed by the hour while the instance runs. A stopped instance still
 
 ### 1. Vast.ai
 
-1. Add prepaid credit and turn off automatic top-up. Your balance then becomes the spending limit; stewart-cloud does not read your balance.
+1. Add prepaid credit and turn off automatic top-up. Your balance then becomes the spending limit; stewart-cloud never checks the balance before renting (`balance` only displays it).
 2. Create the two API keys above. Keep them separate: user_write also covers creating API keys and account environment variables. If you skip the template key, the rental key needs user_read and user_write as well.
 3. In the account settings, add the environment variable `TS_AUTHKEY` with the Tailscale key from the next step. The pod moves it to a mode-600 file in `/dev/shm` and removes it from its environment before starting anything else. It never appears in this repository, the template, or a command line.
 
@@ -183,10 +183,16 @@ uv run --no-project --python 3.13 python deploy/vast/make_template_env.py --out 
 ```
 
 - `offers` lists matching offers, cheapest per GPU first, and prints the `up` command to run.
-- `up` repeats the search and checks the offer and price again. It rents one instance per role, and refuses while the role's node name is still on the tailnet. A stopped instance of the same role is destroyed first.
+- `up` repeats the search and checks the offer and price again. It rents one instance per role, and refuses while the role's node name is still on the tailnet. A stopped instance of the same role is destroyed first. To keep it and rent another, use `up-keep <role> <offer_id> <max $/hr> <disk GB>` (refused while the same role is running).
 - `up` reads the current template back from the API and rents only if its bundle hash, boot script hash and Args match the `publish` record.
 - `status` shows uptime, cost so far, time left before the idle stop, model download progress, and failed lanes or boot errors.
 - For evaluation, `up eval <offer_id> <max $/hr> <plan>` picks a plan from `plans` in the model table.
+- `balance` shows the two account balance fields and the hourly total of running instances. It only reads and never blocks renting (the key needs user_read).
+- By default every role requires datacenter, verified and reliability ≥ `reliability_min`. To let evaluation use individual hosts too, set `"nondc_reliability_min": 0.98` (for example) under `roles.eval` in `config.json`; eval2 follows it.
+  - The eval search then runs once without the datacenter filter and once with it, and merges the two.
+  - Datacenter offers keep the usual conditions. Other offers are rented only if verified and at least that reliable.
+  - `offers` lines show `is_datacenter` and `hosting_type`, and the `up` record keeps the machine id, location, reliability and GPU.
+  - An individual host can read the keys, model and request text inside the container just as a datacenter can; what changes is how the host was vetted. Rotating the Tailscale key and the HF read token after the experiment is recommended.
 
 ### Choosing a model
 
@@ -238,6 +244,8 @@ Rent with `up quant`. The instance serves `/status` on port 8001 and the results
 - `modelstore pull <quant node>` collects conversion results into `incoming/`.
 - `modelstore promote <folder> <alias>` checks file types, sizes, hashes, safetensors headers and the KL thresholds, then adds the model to the catalog and prints the `files` list for the model table.
 - An entry with `source = "home"` makes the pod open a receive port and wait. The `modelpush` service sees it within 30 seconds and pushes the catalog files; the pod checks every hash before starting vLLM.
+- (Optional) If the link from home to the pod is slow, upload the same files to a private HF repository and add `mirror = { repo = "<owner>/<repo>", rev = "<40 chars>" }` to that line. Put a fine-grained token that can read only that repository in the Vast account environment variable `STEWART_HF_READ`; the pod then downloads from there first and checks the `files` hashes. Without the token, or if the download fails, it falls back to the push from home.
+- `pull` resumes an interrupted `.part` file and gives up after `stall_s` (default 300 s) without a byte; running it again resumes.
 
 Installation and the permission layout are described in `deploy/modelstore/README.md`.
 
@@ -256,7 +264,25 @@ The pod stops itself in these cases. A stopped instance still pays for its disk,
 | No requests or tokens, nothing running or waiting | 90 minutes for serve, 30 for evaluation | `IDLE_MIN` |
 | Server not up yet on first boot (time spent receiving from the model store does not count) | 45 minutes | `BOOT_GRACE_MIN` |
 | Total uptime | 8 hours; 4 × targets + 2 hours for quant | `MAX_HOURS` |
-| Boot error | one-line reason, then a 900-second wait so you can read `logs`, then stop | — |
+| Boot error (before joining the tailnet) | one-line reason, then a 900-second wait so you can read `logs`, then stop | — |
+| Boot error (after joining the tailnet) | one-line reason, then 60 minutes for the shell escape hatch, then stop. `touch /workspace/stewart/hold` waits until removed (up to 360 minutes), `stop-now` stops at once | `HALT_HOLD_MIN`, `HALT_HOLD_MAX_MIN` |
+
+### Stop, start, copy, rebuild
+
+```bash
+/opt/stewart-cloud/bin/stewart-cloud stop <instance_id>
+/opt/stewart-cloud/bin/stewart-cloud start <instance_id>
+/opt/stewart-cloud/bin/stewart-cloud copy <src id>:/workspace/quant/ <dst id>:/workspace/import/
+/opt/stewart-cloud/bin/stewart-cloud retemplate <instance_id>
+```
+
+- All of these act only on instances labelled `stewart-`.
+- `stop` stops an instance or cancels a pending start. The disk stays and keeps costing.
+- `start` starts it again. If the machine's GPUs are taken, Vast queues the request.
+- `copy` copies files from one instance to another (Vast copy_direct, network charges apply). The source may be stopped.
+- `retemplate` rebuilds the instance from its role's current template and starts it if stopped. Vast does not document whether the disk survives, so check with `logs` afterwards.
+- The pod joins with `tailscale up --ssh`. Devices allowed by the ssh rule in your tailnet ACL can enter with `ssh root@<name>.<your tailnet>.ts.net` (the shell escape hatch). A leaked identity of a device in that rule's src can get root on the rented machine, so keep src narrow. The pod still has no way to connect back to you.
+- `logs` for the serve role shows only boot-stage and HALT lines. The pod filters vLLM output through `deploy/serving/logscrub.py` so request text is not kept on disk or in the container log.
 
 ## Cost estimates
 

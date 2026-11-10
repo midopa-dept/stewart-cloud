@@ -25,6 +25,12 @@ unset TS_AUTHKEY
 VKEY=/dev/shm/vast-key
 printf '%s' "${CONTAINER_API_KEY:-}" > "$VKEY"
 unset CONTAINER_API_KEY
+# T35(v14): HF 읽기 전용 토큰(Vast 계정 환경 변수 STEWART_HF_READ — 사용자가 한 번 넣는다, 그 비공개 저장소 하나 읽기만).
+# 서빙 표의 mirror(home 세트의 HF 사본)를 받을 때 파일 경로(HF_TOKEN_PATH)로만 쓴다. 쓰기 토큰은 파드에 두지 않는다
+HF_READ_FILE=/dev/shm/hf-read
+[ -n "${STEWART_HF_READ:-}" ] && printf '%s' "$STEWART_HF_READ" > "$HF_READ_FILE"
+unset STEWART_HF_READ
+export HF_READ_FILE
 umask 022
 
 # ---- 1. 원격 측정·업데이트 확인 끄기(제3자 이미지·가중치, 비공개 코드가 흐름) ----
@@ -36,12 +42,32 @@ mkdir -p "$S/ts-state" "$S/bin" "$S/models" "$S/cache"
 log() { printf '%s\t%s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$S/pod-log.tsv"; }
 # 치명적 오류: 그냥 끝내면 컨테이너가 재시작을 되풀이하며 과금될 수 있다 → 이유 한 줄(stdout·pod-log), 키 파일 지움,
 # HALT_WAIT_S(900초) 기다린 뒤 스스로 정지(래퍼 logs 로 이유를 읽을 틈 — T23), 대기. destroy 는 사람·래퍼.
-HALT_WAIT_S=900
+HALT_WAIT_S=900 HALT_HOLD_MIN=${HALT_HOLD_MIN:-60} HALT_HOLD_MAX_MIN=${HALT_HOLD_MAX_MIN:-360} TS_UP=0 TS_NAME=?
+# v14: 테일넷이 붙은 뒤의 HALT 는 바로 정지하지 않고 셸 비상구(집 → 파드 tailscale ssh)로 사람을 기다린다.
+#   HALT_HOLD_MIN(60)분 뒤 정지. touch $S/hold 면 지울 때까지(HALT 부터 HALT_HOLD_MAX_MIN 360분 상한), touch $S/stop-now 면 바로.
+#   테일넷 전 HALT 는 예전처럼 HALT_WAIT_S(900초) 뒤 정지.
+hold_door() {
+  local i=0
+  rm -f "$S/stop-now"
+  log "셸 비상구: 집에서 tailscale ssh root@$TS_NAME 로 들어온다. ${HALT_HOLD_MIN}분 뒤 정지(touch $S/hold 면 지울 때까지·상한 ${HALT_HOLD_MAX_MIN}분, touch $S/stop-now 면 바로)"
+  while [ "$i" -lt "$HALT_HOLD_MAX_MIN" ]; do
+    if [ -e "$S/stop-now" ]; then rm -f "$S/stop-now"; log "셸 비상구: stop-now — 정지"; return 0; fi
+    if [ "$i" -ge "$HALT_HOLD_MIN" ] && [ ! -e "$S/hold" ]; then break; fi
+    sleep 60
+    i=$(( i + 1 ))
+  done
+  log "셸 비상구: ${i}분 기다림 끝 — 정지"
+}
 halt() {
+  trap - ERR
   rm -f "$KEYF"
   log "HALT: $*"
-  log "HALT ${HALT_WAIT_S}초 뒤 스스로 정지(stewart-cloud logs <id> 로 이유를 본다)"
-  sleep "$HALT_WAIT_S" || true
+  if [ "$TS_UP" = 1 ]; then
+    hold_door
+  else
+    log "HALT ${HALT_WAIT_S}초 뒤 스스로 정지(stewart-cloud logs <id> 로 이유를 본다)"
+    sleep "$HALT_WAIT_S" || true
+  fi
   if [ -n "${CONTAINER_ID:-}" ] && [ -s "$VKEY" ]; then
     (umask 077; printf 'Authorization: Bearer %s\n' "$(cat "$VKEY")" > /dev/shm/vast-hdr)   # 키가 명령 줄(ps)에 보이지 않게
     code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H @/dev/shm/vast-hdr \
@@ -185,14 +211,34 @@ if [ "$(cat "$S/bin/.ts-version" 2>/dev/null)" != "$TS_VER" ]; then
   log "tailscale $TS_VER installed sha256=$got"
 fi
 TS="$S/bin/tailscale --socket=/tmp/tailscaled.sock"
-"$S/bin/tailscaled" --tun=userspace-networking --statedir="$S/ts-state" --socket=/tmp/tailscaled.sock \
-  --no-logs-no-support >>"$S/tailscaled.log" 2>&1 &
+# 고정 UDP 포트(v14): 템플릿 -p 70000:70000/udp → Vast 가 안팎 같은 번호를 VAST_UDP_PORT_70000, 공인 IP 를 PUBLIC_IPADDR 로 준다.
+# 그 포트로 tailscaled 를 띄우고 그 끝점을 광고한다(Docker 뒤 대칭 NAT 라 STUN 이 본 포트가 틀린다 — 실측).
+# 직결이 중계보다 느릴 수 있어(먼 지역 사이) $S/ts-relay 가 있으면 쓰지 않는다
+TS_PORT=${VAST_UDP_PORT_70000:-} TS_ADV=""
+if [ -n "$TS_PORT" ] && [ -n "${PUBLIC_IPADDR:-}" ] && [ ! -e "$S/ts-relay" ]; then TS_ADV="$PUBLIC_IPADDR:$TS_PORT"; fi
+if [ -n "$TS_ADV" ]; then
+  TS_DEBUG_PRETENDPOINT="$TS_ADV" "$S/bin/tailscaled" --tun=userspace-networking --port="$TS_PORT" --statedir="$S/ts-state" \
+    --socket=/tmp/tailscaled.sock --no-logs-no-support >>"$S/tailscaled.log" 2>&1 &
+  log "tailscale 고정 UDP $TS_ADV(템플릿 -p 70000:70000/udp)"
+else
+  "$S/bin/tailscaled" --tun=userspace-networking --statedir="$S/ts-state" --socket=/tmp/tailscaled.sock \
+    --no-logs-no-support >>"$S/tailscaled.log" 2>&1 &
+  log "tailscale UDP 무작위 포트(VAST_UDP_PORT_70000=${TS_PORT:-없음} PUBLIC_IPADDR=${PUBLIC_IPADDR:-없음})"
+fi
 sleep 2
 # 상태가 볼륨에 남아 있으면 같은 노드로 다시 붙는다(이름 유지). 없으면 키로 새로 붙는다.
 # --accept-dns=false: 테일넷 DNS(서버 AdGuard)에는 tag:gpu 허가가 없다. 파드 DNS는 컨테이너 기본값.
-$TS up --auth-key="file:$KEYF" --hostname="$TS_HOST" --accept-dns=false --timeout=60s
+# --ssh(v14 셸 비상구): 집(테일넷 ACL ssh 규칙이 허락한 쪽) → 파드 root 셸. 파드 → 집 연결은 그대로 없다. 안 되면 비상구 없이 붙는다
+if $TS up --auth-key="file:$KEYF" --hostname="$TS_HOST" --accept-dns=false --timeout=60s --ssh; then
+  log "tailscale ssh 켬(셸 비상구)"
+else
+  log "tailscale up --ssh 실패 — 셸 비상구 없이 붙는다"
+  $TS up --auth-key="file:$KEYF" --hostname="$TS_HOST" --accept-dns=false --timeout=60s
+fi
 rm -f "$KEYF"
-log "tailscale up as $($TS status --json | $PY -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"])')"
+TS_UP=1
+TS_NAME=$($TS status --json | $PY -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
+log "tailscale up as $TS_NAME."
 
 # ---- 3. 자동 종료 감시기(유휴 30분·기동 45분·8시간, 모든 차선의 /metrics 합) + 상태(차선 k: 127.0.0.1:80k1/status) ----
 $PY "$S/idle_stop.py" --state-dir "$S" --role "$ROLE" --lanes "$LANES" >>"$S/idle_stop.log" 2>&1 &
@@ -346,6 +392,9 @@ else
   log "quality skip(QUALITY=$QUALITY, 이 설정은 이미 끝남)"
 fi
 # vLLM 로그를 볼륨에도 남긴다(KV 캐시 크기·verify 판정 줄을 상태 응답이 읽는다). 컨테이너 로그에도 그대로 나간다.
-exec > >(tee -a "$S/vllm.log") 2>&1
+# 실사용 서빙(serve)은 사용자 대화 글을 디스크·컨테이너 로그에 남기지 않는다 — vLLM 출력을 logscrub.py 로
+# 거른다(요청 기록 꼴·input_value·예외 메시지·긴 따옴표 글을 지우고 수치·상태만). 첫 울타리는 vLLM 이 글을 쓰지 않는 설정
+# (요청 기록 꺼짐 — serving.py, VLLM_ENABLE_RESPONSES_API_STORE=0). 시작 단계 기록은 pod-log.tsv(log() 줄만, 글 없음)
+exec > >($PY "$SV/logscrub.py" | tee -a "$S/vllm.log") 2>&1
 [ -n "$STEWART_OVERLAY" ] && log "image-overlay $(PYTHONPATH="$STEWART_OVERLAY" $PY "$SV/image_info.py" --overlay "$STEWART_OVERLAY" 2>&1 | head -c 1500)"
 serve_lane 0 8000                     # 차선 0, :8000(v7 은 차선마다 CUDA_VISIBLE_DEVICES 를 정해 serve_lane k 80k0)

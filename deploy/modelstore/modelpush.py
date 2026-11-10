@@ -43,8 +43,9 @@ DENY_SUFFIX = (".py", ".bin", ".pt", ".pth", ".pkl", ".pickle")
 ST_DTYPES = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2, "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
              "F8_E4M3": 1, "F8_E5M2": 1, "U16": 2, "U32": 4, "U64": 8}
 DEFAULTS = {"root": "/srv/models", "hosts": [], "port": 8090, "interval_s": 30, "http_timeout_s": 15,
-            "min_rate_Bps": 5_000_000, "max_total_bytes": 200 * 10**9,
-            "thresholds": {"pad_mean_kl_max": 1e-4, "pad_top1_min": 0.999, "quant_mean_kl_max": 0.1, "quant_top1_min": 0.85,
+            "min_rate_Bps": 0, "stall_s": 300, "max_total_bytes": 200 * 10**9,
+            "thresholds": {"pad_mean_kl_max": 1e-4, "pad_top1_min": 0.999, "pad_check_replaces_kl": False,
+                           "quant_mean_kl_max": 0.1, "quant_top1_min": 0.85,
                            "require_verify": True, "require_quality": True}}
 
 
@@ -199,7 +200,9 @@ def push_host(cfg: dict, host: str, port: int | None = None, state: dict | None 
         rate = cfg["min_rate_Bps"]
         t0 = time.monotonic()
         try:
-            code, body = put_file(host, port, f["name"], src, f["size"], max(t, f["size"] / rate))
+            # 소켓 시간 제한: 평균 문턱(min_rate_Bps)이 있으면 그것으로, 0 이면 멈춤 감지 stall_s(v13.1)
+            code, body = put_file(host, port, f["name"], src, f["size"],
+                                  max(t, f["size"] / rate) if rate else max(t, int(cfg.get("stall_s") or 300)))
         except (OSError, StoreError) as e:
             return f"{host}: PUT {f['name']} 실패({type(e).__name__}: {str(e)[:120]})"
         dt = time.monotonic() - t0
@@ -270,17 +273,36 @@ def pull(cfg: dict, host: str, into: Path | None = None, send_done: bool = True,
             if out.is_file() and out.stat().st_size == f["size"] and file_sha(out) == f["sha256"]:
                 continue                                     # 이어 받기
             part = d / f".{f['name']}.part"
-            c = _conn(host, port, max(t, 120))
-            deadline = time.monotonic() + f["size"] / cfg["min_rate_Bps"] + 600
+            # v13.1: 이어 받기 — .part 가 있으면 그 뒤부터(Range). 멈춤 감지 — 읽기가 stall_s 초 동안 0 바이트면 끊는다
+            # (소켓 시간 제한). 평균 속도 문턱(min_rate_Bps)은 0 이면 쓰지 않는다(기본). 끊겨도 .part 는 남겨 다음 pull 이 잇는다
+            have = part.stat().st_size if part.is_file() else 0
+            if have >= f["size"]:
+                part.unlink()
+                have = 0
+            c = _conn(host, port, max(t, int(cfg.get("stall_s") or 300)))
+            rate = int(cfg.get("min_rate_Bps") or 0)
+            deadline = time.monotonic() + f["size"] / rate + 600 if rate > 0 else None
             try:
-                c.request("GET", f"/export/{s['alias']}/{urllib.parse.quote(f['name'])}")
+                hdr = {"Range": f"bytes={have}-"} if have else {}
+                c.request("GET", f"/export/{s['alias']}/{urllib.parse.quote(f['name'])}", headers=hdr)
                 r = c.getresponse()
-                if r.status != 200:
+                if r.status == 206 and have:
+                    want_cr = f"bytes {have}-{f['size'] - 1}/{f['size']}"
+                    if r.getheader("Content-Range", "") != want_cr or int(r.getheader("Content-Length", "-1")) != f["size"] - have:
+                        raise StoreError(f"{f['name']}: 이어 받기 응답 꼴이 다르다")
+                    h, got, mode = hashlib.sha256(), have, "ab"
+                    with open(part, "rb") as fh:
+                        for b in iter(lambda: fh.read(CHUNK), b""):
+                            h.update(b)
+                    log(f"pull {host} {s['alias']} {f['name']} 이어 받기 {have:,}B 부터")
+                elif r.status == 200:
+                    if int(r.getheader("Content-Length", "-1")) != f["size"]:
+                        raise StoreError(f"{f['name']}: Content-Length 가 목록 크기와 다르다")
+                    h, got, mode = hashlib.sha256(), 0, "wb"
+                else:
                     raise StoreError(f"{f['name']}: HTTP {r.status}")
-                if int(r.getheader("Content-Length", "-1")) != f["size"]:
-                    raise StoreError(f"{f['name']}: Content-Length 가 목록 크기와 다르다")
-                h, got = hashlib.sha256(), 0
-                with open(part, "wb") as fh:
+                t0, first = time.monotonic(), None
+                with open(part, mode) as fh:
                     while got < f["size"]:
                         b = r.read(min(CHUNK, f["size"] - got))
                         if not b:
@@ -288,15 +310,18 @@ def pull(cfg: dict, host: str, into: Path | None = None, send_done: bool = True,
                         fh.write(b)
                         h.update(b)
                         got += len(b)
-                        if time.monotonic() > deadline:
-                            raise StoreError(f"{f['name']}: 시간 제한을 넘었다")
-                if got != f["size"] or h.hexdigest() != f["sha256"]:
-                    raise StoreError(f"{f['name']}: 크기·sha 가 목록과 다르다({got}/{f['size']})")
+                        if first is None and time.monotonic() - t0 >= 30:
+                            first = (got - (have if mode == "ab" else 0)) / (time.monotonic() - t0)
+                            log(f"pull {host} {s['alias']} {f['name']} 처음 30초 {first / 1e6:.2f} MB/s")
+                        if deadline and time.monotonic() > deadline:
+                            raise StoreError(f"{f['name']}: 시간 제한을 넘었다(min_rate_Bps {rate})")
+                if got != f["size"]:
+                    raise StoreError(f"{f['name']}: 덜 받았다({got:,}/{f['size']:,}B) — 같은 pull 을 다시 치면 이어 받는다")
+                if h.hexdigest() != f["sha256"]:
+                    part.unlink(missing_ok=True)
+                    raise StoreError(f"{f['name']}: sha 가 목록과 다르다 — .part 를 지웠다(다시 받는다)")
                 os.replace(part, out)
                 log(f"pull {host} {s['alias']} {f['name']} {got:,}B")
-            except BaseException:
-                part.unlink(missing_ok=True)
-                raise
             finally:
                 c.close()
     (dest / "export.json").write_text(json.dumps(idx, ensure_ascii=False, indent=1) + "\n")
@@ -359,7 +384,11 @@ def name_allowed(name: str) -> bool:
 def check_report(rep: dict, th: dict) -> list[str]:
     """보고 숫자 문턱. pad_to 가 0(0 채우기를 하지 않은 대상)이면 0 채우기 문턱은 건너뛴다. pad_to 가 없는 옛 보고는 0 채운 것으로 본다."""
     bad = []
-    if rep.get("pad_to") != 0:
+    # 열린 결정 a(기본 꺼짐 — 켜기 전에 결과를 검토한다): 0 채우기 바이트 증명
+    # (pad_check.ok — 늘어난 MLP 는 모두 0, 그 밖 바이트 같음 → 출력이 수학적으로 같다)이 통과면 BF16 KL 문턱은 보지 않는다
+    # (GPU BF16 은 행렬 모양이 달라 반올림 차례가 바뀌어 0 이 아니다 — 숫자는 보고에 남는다)
+    pad_proved = th.get("pad_check_replaces_kl") and (rep.get("pad_check") or {}).get("ok") is True
+    if rep.get("pad_to") != 0 and not pad_proved:
         kp = rep.get("kl_pad") or {}
         if not (isinstance(kp.get("mean_kl"), (int, float)) and kp["mean_kl"] <= th["pad_mean_kl_max"]):
             bad.append(f"0 채우기 KL 평균 {kp.get('mean_kl')} > {th['pad_mean_kl_max']}")

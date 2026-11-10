@@ -52,7 +52,9 @@ def make_args(sha: str) -> str:
 def options(gist_raw_url: str, sha: str, cf: str = "<설정 gist 최신 raw 주소>", ctx: str = "fast", spec: str = "mtp",
             sb: str | None = None) -> str:
     # CTX·SPEC 는 설정 파일(CF)을 못 받았을 때의 기본값이다. SB = boot.sh(T23).
-    return f"-e CTX={ctx} -e SPEC={spec} -e PU={gist_raw_url} -e PS={sha} -e CF={cf} -e SB={sb if sb is not None else boot_b64()}"
+    # v14: -p 70000:70000/udp — tailscaled 고정 UDP 포트(Vast 가 안팎 같은 번호를 VAST_UDP_PORT_70000 으로 준다)
+    return (f"-e CTX={ctx} -e SPEC={spec} -e PU={gist_raw_url} -e PS={sha} -e CF={cf} -e SB={sb if sb is not None else boot_b64()}"
+            " -p 70000:70000/udp")
 
 
 def slim_sh(text: str) -> str:

@@ -58,7 +58,7 @@ flowchart LR
 
 ### 1. Vast.ai
 
-1. 선불 크레딧을 넣고 자동 충전을 끕니다. 그러면 잔액이 지출 상한이 됩니다. stewart-cloud 는 잔액을 보지 않습니다.
+1. 선불 크레딧을 넣고 자동 충전을 끕니다. 그러면 잔액이 지출 상한이 됩니다. stewart-cloud 는 빌리기 전에 잔액을 따지지 않습니다(`balance` 로 보기만 합니다).
 2. 위의 API 키 두 개를 만듭니다. user_write 는 API 키와 계정 환경 변수 만들기까지 포함하므로 두 키를 나눠 둡니다. 템플릿용 키를 만들지 않으면 빌리기용 키에도 user_read·user_write 가 있어야 합니다.
 3. 계정 설정의 환경 변수에 `TS_AUTHKEY` 를 넣습니다(값은 다음 절에서 만드는 Tailscale 키). 파드는 다른 것을 띄우기 전에 이 값을 `/dev/shm` 의 600 파일로 옮기고 환경에서 지웁니다. 이 값은 이 저장소·템플릿·명령줄 어디에도 나오지 않습니다.
 
@@ -185,10 +185,16 @@ uv run --no-project --python 3.13 python deploy/vast/make_template_env.py --out 
 ```
 
 - `offers` 는 조건에 맞는 offer 를 장당 값이 싼 순서로 보이고, 칠 `up` 명령을 함께 보입니다.
-- `up` 은 같은 검색을 다시 해서 offer 와 값을 한 번 더 봅니다. 역할마다 하나만 빌리고, 그 역할의 노드 이름이 아직 테일넷에 있으면 빌리지 않습니다. 같은 역할의 정지한 인스턴스는 먼저 지웁니다.
+- `up` 은 같은 검색을 다시 해서 offer 와 값을 한 번 더 봅니다. 역할마다 하나만 빌리고, 그 역할의 노드 이름이 아직 테일넷에 있으면 빌리지 않습니다. 같은 역할의 정지한 인스턴스는 먼저 지웁니다. 정지한 것을 남겨 두고 하나 더 빌리려면 `up-keep <역할> <offer_id> <시간당 최대 달러> <디스크 GB>` 를 씁니다(같은 역할이 켜져 있으면 거부).
 - `up` 은 지금 템플릿을 API 로 다시 읽어, 묶음 해시·boot 스크립트 해시·Args 가 `publish` 기록과 같을 때만 빌립니다.
 - `status` 는 켜진 시간, 지금까지의 값, 쉬다 정지까지 남은 시간, 모델 받기 진행, 실패한 차선과 부팅 오류를 보입니다.
 - 평가에는 `up eval <offer_id> <시간당 최대 달러> <계획>` 으로 모델 표의 `plans` 에서 계획을 고릅니다.
+- `balance` 는 계정 잔액 칸 둘과 켜진 인스턴스의 시간당 합을 보입니다. 읽기만 하고 빌리기를 막지는 않습니다(키에 user_read 가 있어야 합니다).
+- 기본 조건은 모든 역할이 datacenter·verified·신뢰도 ≥ `reliability_min` 입니다. 평가만 개인 호스트도 쓰려면 `config.json` 의 `roles.eval` 에 `"nondc_reliability_min": 0.98` 처럼 적습니다(eval2 도 따릅니다).
+  - 그러면 eval 검색은 datacenter 조건 없이 한 번, datacenter 로 한 번 해서 합칩니다.
+  - datacenter 인 offer 는 지금 조건 그대로입니다. 아닌 offer 는 verified 이고 신뢰도가 이 값 이상일 때만 빌립니다.
+  - `offers` 줄에 `is_datacenter`·`hosting_type` 이 나오고, `up` 기록에 기계 번호·위치·신뢰도·GPU 가 남습니다.
+  - 개인 호스트도 datacenter 처럼 컨테이너 안의 키·모델·요청 글을 볼 수 있습니다. 바뀌는 것은 호스트를 고르는 심사입니다. 실험 뒤 Tailscale 키와 HF 읽기 토큰을 바꾸는 것을 권합니다.
 
 ### 모델 고르기
 
@@ -240,6 +246,8 @@ timeout_s = 240
 - `modelstore pull <quant 노드>` 는 변환 결과를 `incoming/` 으로 가져옵니다.
 - `modelstore promote <폴더> <별칭>` 은 파일 꼴·크기·해시·safetensors 머리·KL 문턱을 검사한 뒤 카탈로그에 넣고, 모델 표에 붙일 `files` 목록을 보입니다.
 - 모델 표의 `source = "home"` 줄을 고르면 파드가 받는 포트를 열고 기다립니다. `modelpush` 서비스가 30초 안에 보고 카탈로그 파일을 밀어 넣고, 파드는 해시를 모두 견준 뒤 vLLM 을 띄웁니다.
+- (선택) 집에서 파드까지 망이 느리면 같은 파일을 HF 비공개 저장소에 올려 두고, 그 줄에 `mirror = { repo = "<owner>/<repo>", rev = "<40자>" }` 를 적습니다. Vast 계정 환경 변수 `STEWART_HF_READ` 에 그 저장소 하나만 읽는 fine-grained 토큰을 넣으면 파드가 먼저 거기서 받고 `files` 해시로 견줍니다. 토큰이 없거나 받기가 실패하면 집에서 밀어 넣기로 갑니다.
+- `pull` 은 끊긴 `.part` 를 이어 받고, `stall_s`(기본 300초) 동안 한 바이트도 오지 않으면 끊습니다. 다시 치면 이어 받습니다.
 
 설치와 권한 구조는 `deploy/modelstore/README.md` 에 있습니다.
 
@@ -258,7 +266,25 @@ timeout_s = 240
 | 요청·토큰이 늘지 않고, 처리 중·대기 요청이 없음 | serve 90분, 평가 30분 | `IDLE_MIN` |
 | 첫 부팅에서 서버가 아직 안 뜸(모델 보관소에서 받는 시간은 세지 않음) | 45분 | `BOOT_GRACE_MIN` |
 | 켜진 시간 | 8시간, quant 는 4 × 대상 수 + 2시간 | `MAX_HOURS` |
-| 부팅 오류 | 까닭 한 줄을 남기고, `logs` 로 읽을 수 있게 900초 기다린 뒤 정지 | — |
+| 부팅 오류(테일넷에 붙기 전) | 까닭 한 줄을 남기고, `logs` 로 읽을 수 있게 900초 기다린 뒤 정지 | — |
+| 부팅 오류(테일넷에 붙은 뒤) | 까닭 한 줄을 남기고 셸 비상구로 60분 기다린 뒤 정지. `touch /workspace/stewart/hold` 면 지울 때까지(상한 360분), `stop-now` 면 바로 | `HALT_HOLD_MIN`·`HALT_HOLD_MAX_MIN` |
+
+### 정지·켜기·복사·다시 만들기
+
+```bash
+/opt/stewart-cloud/bin/stewart-cloud stop <instance_id>
+/opt/stewart-cloud/bin/stewart-cloud start <instance_id>
+/opt/stewart-cloud/bin/stewart-cloud copy <원본 id>:/workspace/quant/ <대상 id>:/workspace/import/
+/opt/stewart-cloud/bin/stewart-cloud retemplate <instance_id>
+```
+
+- 모두 `stewart-` 이름표가 붙은 인스턴스에만 합니다.
+- `stop` 은 정지하거나 켜기 대기를 취소합니다. 디스크는 남고 디스크 요금이 계속 나갑니다.
+- `start` 는 다시 켭니다. 그 기계의 GPU 가 남에게 가 있으면 Vast 가 대기열에 둡니다.
+- `copy` 는 인스턴스에서 인스턴스로 파일을 복사합니다(Vast copy_direct, 망 요금). 원본은 정지해 있어도 됩니다.
+- `retemplate` 는 인스턴스를 그 역할의 지금 템플릿으로 다시 만들고, 정지해 있으면 켭니다. 디스크가 남는지는 Vast 문서에 없어서, 켠 뒤 `logs` 로 봅니다.
+- 파드는 `tailscale up --ssh` 로 붙습니다. 테일넷 ACL 의 ssh 규칙이 허락한 쪽에서 `ssh root@<이름>.<내 테일넷>.ts.net` 으로 들어갈 수 있습니다(셸 비상구). 그 규칙의 src 에 들어간 기기의 신원이 새면 그 기기가 빌린 장비에 root 로 들어갈 수 있으니, src 는 좁게 둡니다. 파드에서 내 쪽으로 나가는 길은 여전히 없습니다.
+- serve 역할의 `logs` 는 시작 단계 줄과 HALT 줄만 보입니다. 파드는 vLLM 출력을 `deploy/serving/logscrub.py` 로 걸러 요청 글을 디스크·컨테이너 로그에 남기지 않습니다.
 
 ## 비용 어림
 

@@ -37,7 +37,7 @@ def sha(p: Path) -> str:
 def files_of(d: Path) -> list[dict]:
     out = []
     for p in sorted(d.iterdir(), key=lambda p: p.name.encode()):
-        if p.name.startswith(".") or p.name.endswith(".bak") or p.name == DRAFT_PT:
+        if p.name.startswith(".") or ".bak" in p.name or p.name == DRAFT_PT:   # v13.1: prepare 의 .bak-mtp·.bak_embed 꼴도
             continue
         if p.is_dir():
             raise SystemExit(f"하위 폴더는 내보내지 않는다: {p}")
@@ -59,7 +59,11 @@ def draft_json(d: Path, shipped: Path | None) -> int | None:
         ref = json.loads(shipped.read_text())
         if ids != ref:
             raise SystemExit("draft 어휘가 HyperQwen draft_vocab_ids.json 과 다르다")
-    (d / DRAFT_JSON).write_text(json.dumps(ids))
+    body = json.dumps(ids)
+    out = d / DRAFT_JSON
+    if not out.exists() or out.read_text() != body:   # 다시 만들 때(대상별 내보내기) 받는 중인 파일을 덮지 않게: 다를 때만, 임시 뒤 이름 바꾸기
+        (d / (".tmp-" + DRAFT_JSON)).write_text(body)
+        (d / (".tmp-" + DRAFT_JSON)).replace(out)
     return len(ids)
 
 
@@ -81,6 +85,7 @@ def report(q: Path, t: Path, target: dict, pile_rev: str) -> dict:
             "pad_to": target["pad_to"], "recipe": _j(t / "recipe.json"),
             "pad": _j(t / "out-bf16heads" / "stewart_pad_report.json") if target["pad_to"] else None,
             "kl_pad": _j(t / "kl-pad.json") if target["pad_to"] else None,
+            "pad_check": _j(t / "pad-check.json") if target["pad_to"] else None,
             "kl_quant_bf16heads": _j(t / "kl-quant-bf16heads.json"),
             "verify": {"ok": ok, "last": vlog[-1][:300] if vlog else None},
             "quality": {"ok": ok, "result": _j(qres[-1]) if qres else None, "tail": [ln[:300] for ln in qlog[-12:]]},

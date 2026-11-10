@@ -121,6 +121,11 @@ class FakeVast:
         self.gh_calls = []
         self.raw_override = {}                                         # raw 주소 → 다른 내용(시험)
         self.cf_text = "CTX=long\nSPEC=mtp\n"
+        self.retpl_new_id = None
+        self.queue_ids = set()                                         # 켜기를 대기열에 두는 인스턴스(T32)
+        self.copies = []
+        self.user = {"credit": 41.2345, "balance": -0.5, "api_key": "k" * 64, "email": "who@example.invalid",
+                     "fullname": "Some Body", "billaddress_line1": "1 Road", "id": 99}
 
     def open(self, req, timeout=None):
         url, method = req.full_url, req.get_method()
@@ -162,15 +167,22 @@ class FakeVast:
         q = {k: v[0] for k, v in SC.urllib.parse.parse_qs(qs).items()}
         if path == "/v0/instances/" and method == "GET":     # v0 목록은 지원 종료(11/8 v12.10 실측)
             raise SC.urllib.error.HTTPError(url, 410, "x", {}, io.BytesIO(b'{"msg": "/api/v0/instances/ is deprecated."}'))
+        if path == "/v0/users/current" and method == "GET":
+            self.calls[-1]["auth"] = req.get_header("Authorization")
+            return FakeResp(self.user)
         if path == "/v0/bundles/" and method == "POST":
             self.bundle_bodies.append(body)
             if "id" in body:                                  # 11/8 22:4x 실측: id 조건을 넣으면 offers 에 있던 것도 안 나온다
                 return FakeResp({"offers": []})
             # 서버는 값 상한·싼 순·limit 만 적용한다고 본다(그 밖 조건은 래퍼의 offer_ok 가 다시 본다)
             lte = float(body["dph_total"]["lte"])
+            if "datacenter" in body:                          # T36: 서버 datacenter 검색 = hosting_type 1(datacenter 칸이 있으면 그 값)
+                pool = [o for o in self.offers if (o["datacenter"] if "datacenter" in o else o.get("hosting_type") == 1)]
+            else:
+                pool = self.offers
             ng = body["num_gpus"]
             lo, hi = ng.get("eq", ng.get("gte")), ng.get("eq", ng.get("lte"))
-            os_ = sorted((o for o in self.offers if o["dph_total"] <= lte and lo <= o["num_gpus"] <= hi), key=lambda o: o["dph_total"])
+            os_ = sorted((o for o in pool if o["dph_total"] <= lte and lo <= o["num_gpus"] <= hi), key=lambda o: o["dph_total"])
             return FakeResp({"offers": os_[: int(body["limit"])]})
         if path == "/v1/instances/" and method == "GET":    # 문서의 v1 꼴: 25개씩, next_token
             self.list_queries.append(q)
@@ -201,7 +213,27 @@ class FakeVast:
         m = re.fullmatch(r"/v0/instances/request_logs/(\d+)/", path)
         if m and method == "PUT":
             return FakeResp({"success": True, "result_url": f"https://logs.example-bucket.com/{m.group(1)}.log?X-Amz-Signature=abc"})
+        m = re.fullmatch(r"/v0/instances/update_template/(\d+)/", path)
+        if m and method == "PUT":                             # T30-1R: 같은 id 로 다시 만든다(새 id 를 주게 하려면 retpl_new_id)
+            for i in self.instances:
+                if i["id"] == int(m.group(1)):
+                    i["template_hash_id"] = body["template_hash_id"]
+                    if self.retpl_new_id:
+                        i["id"] = self.retpl_new_id
+            return FakeResp({"success": True, "updated_instance": {"id": int(m.group(1)), "template_hash_id": body["template_hash_id"],
+                                                                   "api_key": "k" * 64}})
         m = re.fullmatch(r"/v0/instances/(\d+)/", path)
+        if m and method == "PUT":
+            if body == {"state": "running"} and int(m.group(1)) in self.queue_ids:   # 실측: GPU 가 남에게 가 있으면
+                return FakeResp({"success": False, "msg": "Required resources are currently unavailable, state change queued."})
+            for i in self.instances:
+                if i["id"] == int(m.group(1)):
+                    st = "running" if body["state"] == "running" else "stopped"
+                    i.update(actual_status=st if st == "running" else "exited", intended_status=st, cur_state=st)
+            return FakeResp({"success": True})
+        if path == "/v0/commands/copy_direct/" and method == "PUT":
+            self.copies.append(body)
+            return FakeResp({"success": True, "msg": ""})
         if m and method == "DELETE":
             self.instances = [i for i in self.instances if i["id"] != int(m.group(1))]
             return FakeResp({"success": True})
@@ -415,7 +447,7 @@ class Flows(Base):
         q = self.fake.calls[0]["body"]
         self.assertEqual(q["num_gpus"], {"eq": 1})
         self.assertEqual(q["cuda_max_good"], {"gte": 13.0})
-        self.assertEqual(q["reliability"], {"gte": 0.95})               # 11/8 22:3x 사용자 결정
+        self.assertEqual(q["reliability"], {"gte": 0.95})
         self.assertEqual(q["dph_total"], {"lte": 0.6})
         self.assertEqual(q["datacenter"], {"eq": True})
         self.assertEqual(self.fake.calls[0]["headers"]["Authorization"], f"Bearer {KEY}")
@@ -938,8 +970,36 @@ class Flows(Base):
         self.assertEqual(put["body"]["env"], {"STEWART_ROLE": "eval", "STEWART_GPUS": "4", "STEWART_PLAN": "a-x4"})
         self.assertEqual(json.loads((self.rec / "current-eval.json").read_text())["plan"], "a-x4")
 
+    def test_logs_serve_shows_stage_lines_only(self):
+        """실사용 서빙(serve)의 컨테이너 로그는 시작 단계 줄(시각<TAB>글)·boot HALT 줄만 — vLLM 출력은 내지 않는다. 데몬 로그는 그대로."""
+        self.assertEqual(self.run_main("up", "102", "0.36")[0], 0)
+        self.fake.log_text = ("/dev/shm/b: OK\n2026-11-11T00:00:01Z\tstart instance=5555\n2026-11-11T00:00:09Z\tmodel-fetch hf-mirror alias=x\n"
+                              "(APIServer pid=1) INFO 11-11 Received request <요청 글 가림>\nINFO:  127.0.0.1 - \"POST /v1/chat/completions\" 200\n"
+                              "사용자 대화 글이 섞인 줄\nHALT: 모델 받기 실패\n")
+        with mock.patch.object(SC.time, "sleep", lambda s: None):
+            rc, out, err = self.run_main("logs", "5555")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("start instance=5555", out)
+        self.assertIn("model-fetch hf-mirror", out)
+        self.assertIn("HALT: 모델 받기 실패", out)
+        for hidden in ("Received request", "POST /v1/chat", "대화 글이 섞인"):
+            self.assertNotIn(hidden, out)
+        self.assertIn("serve: 시작 단계 줄만, 그 밖 3줄은 내지 않음", out)
+        self.fake.log_gets = 0
+        self.fake.log_text = "daemon: container started\n"
+        with mock.patch.object(SC.time, "sleep", lambda s: None):
+            rc, out, err = self.run_main("logs", "5555", "daemon")
+        self.assertIn("daemon: container started", out)                       # 데몬 로그는 그대로
+
+    def test_status_serve_state_line(self):
+        st = {"seen_metrics": True, "pod_log": ["2026-11-11T00:00:01Z\tstart", "2026-11-11T00:03:00Z\tweights pinned lane=0"]}
+        self.assertEqual(SC.serve_state(st), "ready — 마지막 단계: weights pinned lane=0")
+        self.assertTrue(SC.serve_state({"seen_metrics": False, "pod_log": []}).startswith("loading"))
+        self.assertEqual(SC.serve_state({"seen_metrics": False, "pod_log": ["t\tHALT: 모델 받기 실패"]}), "HALT — HALT: 모델 받기 실패")
+
     def test_logs(self):
         self.assertEqual(self.run_main("up", "102", "0.36")[0], 0)
+        [i for i in self.fake.instances if i["id"] == 5555][0]["label"] = "stewart-eval-20261111-0000"   # serve 는 아래 따로
         self.fake.log_text = ("boot\n\nHALT: pod files\nTS_AUTHKEY=tskey-auth-kQ1-abcdef curl https://gist.githubusercontent.com/u/x/raw/1/p\n"
                               "Authorization: Bearer " + KEY + "\nsha 048d3b859fc68b3c746f38246e968370cc745230cb91b5c03fcd060e3c5f9c58  p: FAILED\n"
                               + "".join(f"line {n}\n" for n in range(300)))
@@ -1170,8 +1230,18 @@ class Flows(Base):
             SC.vast(KEY, "POST", "/v0/bundles/", query={"limit": 1})
         src = (HERE / "stewart_cloud.py").read_text()
         code = re.sub(r'"""[\s\S]*?"""|#.*', "", src)
-        for word in ("billing", "/users", "api_key", "templates/", '"state": "stopped"', '"state":"stopped"', "target_state"):
-            self.assertFalse(word in code, word)          # 정지·계정·결제 API 를 부르지 않는다
+        for word in ("billing", "api_key", "templates/", "target_state", "invoices"):
+            self.assertFalse(word in code, word)          # 결제 API 를 부르지 않는다
+        # T32: 정지는 stop 명령(do_state) 하나 — 본문은 vast() 가 {"state": running|stopped} 만 받는다
+        self.assertEqual(code.count('{"state": "stopped"}'), 1)                         # vast() 의 허용 본문 한 곳
+        self.assertEqual(len(re.findall(r'do_state\(', code)), 2)                       # 정의 + main 한 곳
+        # 계정 API 는 사용자 정보 읽기(GET /v0/users/current, balance 의 잔액 두 칸) 하나만. 그 밖의 /users 경로는 없다
+        self.assertEqual(re.findall(r'"/v0/users/[^"]*"', code), ['"/v0/users/current"'] * 2)   # _PATHS 와 do_balance
+        self.assertEqual(len(re.findall(r'/users', code)), 2)                                 # _PATHS 한 줄 + do_balance 한 줄
+        for method, path in (("PUT", "/v0/users/current"), ("POST", "/v0/users/current"), ("GET", "/v0/users/current/reset-apikey/"),
+                             ("GET", "/v0/users/me/invoices")):
+            with self.assertRaises(SC.Stop):
+                SC.vast(KEY, method, path)
         for method in ("PUT", "DELETE"):                   # 템플릿은 찾기(GET)·만들기(POST)만(T27) — 고치기·지우기 없음
             with self.assertRaises(SC.Stop):
                 SC.vast(KEY, method, "/v0/template/")
@@ -1666,6 +1736,288 @@ class ArgsShape(Base):
                 self.assertEqual(SC.expected_args((mte / b / "boot.sb.txt").read_text().strip()), (mte / b / "args.txt").read_text(), b)
         self.assertIsNone(SC.expected_args("not base64!"))
         self.assertIsNone(SC.expected_args(None))
+
+
+
+class TBalance(Base):
+    """balance: 잔액 두 칸만 보이고 개인 칸(api_key·이메일·이름·주소)은 어디에도 없다. 켜진 $/hr 합과 바닥까지 어림."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake.instances += [
+            {"id": 6001, "label": "stewart-quant-20261110-0906", "machine_id": 1, "actual_status": "running", "dph_total": 1.5},
+            {"id": 6002, "label": "stewart-eval-20261110-0624", "machine_id": 2, "actual_status": "exited",
+             "intended_status": "stopped", "dph_total": 2.0},
+            {"id": 6003, "label": "other-job", "machine_id": 3, "actual_status": "running", "dph_total": 0.5}]
+
+    def test_balance_fields_only(self):
+        rc, out, err = self.run_main("balance", tkey_fn=lambda: "t" * 64)
+        self.assertEqual(rc, 0, err)
+        j = [json.loads(l) for l in out.splitlines() if l.startswith("{")][0]
+        self.assertEqual((j["credit"], j["balance"]), (41.2345, -0.5))
+        self.assertEqual((j["running"], j["stopped"], j["running_dph"]), (3, 1, 2.0))     # 이름표와 상관없이 켜진 것 전부(777 은 값 없음)
+        self.assertEqual(j["hours_left_at_running_dph"], round(41.2345 / 2.0, 1))
+        self.assertEqual({m["id"] for m in j["mine"]}, {6001, 6002})
+        for leak in ("k" * 64, "who@example.invalid", "Some Body", "1 Road", "api_key", "email", "fullname"):
+            self.assertNotIn(leak, out + err)
+        self.assertFalse(list(self.rec.glob("*")) if self.rec.exists() else [])          # 기록 파일을 쓰지 않는다
+        call = [c for c in self.fake.calls if c["url"].endswith("/v0/users/current")][0]
+        self.assertEqual(call["auth"], "Bearer " + "t" * 64)                                  # user_read 가 있는 템플릿 키로
+
+    def test_balance_missing_fields_and_no_running(self):
+        self.fake.user = {"email": "who@example.invalid", "credit": "12"}                    # 숫자가 아니면 None
+        self.fake.instances = [i for i in self.fake.instances if i["id"] == 6002]
+        rc, out, err = self.run_main("balance")
+        self.assertEqual(rc, 0, err)
+        j = [json.loads(l) for l in out.splitlines() if l.startswith("{")][0]
+        self.assertEqual((j["credit"], j["balance"], j["running_dph"], j["hours_left_at_running_dph"]), (None, None, 0.0, None))
+        self.assertNotIn("who@example.invalid", out + err)
+
+    def test_balance_403_and_forms(self):
+        self.fake.fail[("GET", SC.API + "/v0/users/current")] = 403
+        rc, out, err = self.run_main("balance")
+        self.assertEqual(rc, SC.EXIT_AUTH)
+        self.assertNotIn(KEY, out + err)
+        with self.assertRaises(SC.Stop) as cm:
+            SC.parse_args(["balance", "x"])
+        self.assertEqual(cm.exception.code, 64)
+        r = subprocess.run(["/bin/sh", str(HERE / "stewart-cloud"), "balance", "x"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 64)
+
+class Retemplate(Base):
+    """T30-1R: 정지한 stewart- 인스턴스를 그 역할의 지금 템플릿으로 다시 만들고 켠다."""
+
+    def stopped_quant(self, iid=7101, label="stewart-quant-20261110-0906"):
+        self.fake.instances.append({"id": iid, "label": label, "machine_id": 9101, "actual_status": "exited",
+                                    "cur_state": "stopped", "intended_status": "stopped", "template_hash_id": "old"})
+
+    def test_retemplate_stopped_quant(self):
+        self.stopped_quant()
+        rc, out, err = self.run_main("retemplate", "7101")
+        self.assertEqual(rc, 0, err)
+        puts = [c for c in self.fake.calls if c["method"] == "PUT"]
+        self.assertEqual(len(puts), 2)
+        self.assertTrue(puts[0]["url"].endswith("/api/v0/instances/update_template/7101/"))
+        self.assertEqual(puts[0]["body"], {"id": 7101, "template_hash_id": QHASH})       # 그 역할(quant)의 지금 템플릿
+        self.assertTrue(puts[1]["url"].endswith("/api/v0/instances/7101/"))
+        self.assertEqual(puts[1]["body"], {"state": "running"})
+        self.assertIn("id 그대로", out)
+        self.assertIn("정지해 있어 켰다", out)
+        self.assertNotIn("k" * 64, out + err)                                # 응답의 허용 밖 칸(api_key 등)은 찍지 않는다
+        ev = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual((ev["event"], ev["role"], ev["now_id"], ev["started"]), ("retemplate", "quant", 7101, True))
+        self.assertEqual(ev["after"]["actual_status"], "running")
+        self.assertIn('"event": "retemplate"', (self.rec / "history.jsonl").read_text())
+
+    def test_retemplate_reports_new_id(self):
+        self.stopped_quant()
+        self.fake.retpl_new_id = 7103
+        rc, out, err = self.run_main("retemplate", "7101")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("id 가 바뀌었다(7101 → 7103)", out)
+        put = [c for c in self.fake.calls if c["method"] == "PUT"][-1]
+        self.assertTrue(put["url"].endswith("/api/v0/instances/7103/"))
+
+    def test_retemplate_refuses_others(self):
+        rc, out, err = self.run_main("retemplate", "777")                    # 남의 이름표
+        self.assertEqual(rc, SC.EXIT_REFUSE)
+        self.stopped_quant(iid=888, label="stewart-handmade")              # 역할을 모르는 stewart- 이름표
+        rc, out, err = self.run_main("retemplate", "888")
+        self.assertEqual(rc, SC.EXIT_REFUSE)
+        self.assertIn("역할을 모른다", err)
+        self.assertFalse([c for c in self.fake.calls if c["method"] == "PUT"])
+
+    def test_retemplate_refuses_changed_template(self):
+        self.stopped_quant()
+        self.fake.templates[QHASH] = {**self.fake.templates[QHASH], "args_str": "bash -c 'other'"}
+        rc, out, err = self.run_main("retemplate", "7101")
+        self.assertEqual(rc, SC.EXIT_REFUSE, err)
+        self.assertFalse([c for c in self.fake.calls if c["method"] == "PUT"])
+
+    def test_retemplate_args(self):
+        for bad in ((), ("x",), ("1", "2")):
+            rc, out, err = self.run_main("retemplate", *bad)
+            self.assertEqual(rc, SC.EXIT_USAGE)
+
+    def test_instance_put_only_running(self):
+        for bad in ({"state": "destroyed"}, {"state": "running", "label": "x"}, None):
+            with self.assertRaises(SC.Stop):
+                SC.vast(KEY, "PUT", "/v0/instances/5/", bad)
+        with self.assertRaises(SC.Stop):
+            SC.vast(KEY, "PUT", "/v0/instances/5/", {"label": "x"})
+
+
+class KeepCopy(Base):
+    """T32: 정지 인스턴스를 지우지 않고 하나 더(up-keep)·인스턴스 → 인스턴스 복사(copy)·켜기(start)·정지/대기 취소(stop).
+    c 길을 처음부터 끝까지 main 으로 탄다(Vast API 는 FakeVast)."""
+    QHASH = QHASH
+
+    def setUp(self):
+        super().setUp()
+        cfg = json.loads(self.cfgp.read_text())
+        cfg["roles"]["quant"]["template_hash_id"] = QHASH
+        self.cfgp.write_text(json.dumps(cfg))
+        Flows.add_quant_offers(self)
+        for iid, label, m in ((7101, "stewart-quant-20261110-0906", 9101), (7102, "stewart-quant-import-20261110", 9102)):
+            self.fake.instances.append({"id": iid, "label": label, "machine_id": m, "actual_status": "exited", "cur_state": "stopped",
+                                        "intended_status": "stopped", "dph_total": 1.68, "start_date": 1_700_000_000.0})
+        self.fake.queue_ids = {7101}
+
+    def test_tonight_c_path_end_to_end(self):
+        # 1) 7101 켜기 → 대기열(실제 응답 꼴) → 대기 취소
+        rc, out, err = self.run_main("start", "7101")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("대기열에 들어갔다", out)
+        self.assertTrue(json.loads(out.strip().splitlines()[-1])["queued"])
+        rc, out, err = self.run_main("stop", "7101")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([c["body"] for c in self.fake.calls if c["method"] == "PUT"][-1], {"state": "stopped"})
+        # 2) up-keep: 정지한 quant 둘은 그대로, 새 quant 하나(디스크 300)
+        rc, out, err = self.run_main("up-keep", "quant", "902", "1.055", "300")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("지우지 않고 둔다(up-keep)", out)
+        self.assertFalse([c for c in self.fake.calls if c["method"] == "DELETE"])
+        put = [c for c in self.fake.calls if c["method"] == "PUT" and "/asks/" in c["url"]][-1]
+        self.assertEqual((put["body"]["disk"], put["body"]["template_hash_id"]), (300, QHASH))
+        new = json.loads(out.strip().splitlines()[-1])
+        self.assertTrue(new["label"].startswith("stewart-quant-"))
+        self.assertEqual(sorted(i["id"] for i in self.fake.instances if str(i["label"]).startswith("stewart-quant")),
+                         sorted([7101, 7102, new["instance_id"]]))
+        # 3) copy: 7102 /workspace/quant/ → 새 인스턴스 /workspace/import/
+        rc, out, err = self.run_main("copy", "7102:/workspace/quant/", f"{new['instance_id']}:/workspace/import/")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.fake.copies, [{"client_id": "me", "src_id": "7102", "dst_id": str(new["instance_id"]),
+                                            "src_path": "/workspace/quant/", "dst_path": "/workspace/import/"}])
+        ev = [json.loads(l) for l in (self.rec / "history.jsonl").read_text().splitlines()]
+        self.assertEqual([e["event"] for e in ev], ["start", "stop", "up-keep", "copy"])
+
+    def test_up_keep_refuses_running_same_role(self):
+        self.fake.instances[-1].update(actual_status="running", intended_status="running")
+        rc, out, err = self.run_main("up-keep", "quant", "902", "1.055", "300")
+        self.assertEqual(rc, SC.EXIT_REFUSE)
+        self.assertIn("켜진 quant 인스턴스가 있다", err)
+
+    def test_up_keep_args(self):
+        for bad in (("quant", "902", "1.055"), ("quant", "902", "1.055", "100"), ("quant", "902", "9.999", "300"),
+                    ("nope", "902", "1.055", "300"), ("quant", "902", "1.055", "99999")):
+            self.assertEqual(self.run_main("up-keep", *bad)[0], SC.EXIT_USAGE, bad)
+
+    def test_up_keep_counts_total(self):
+        self.fake.instances += [{"id": 70 + k, "label": f"stewart-eval-{k}", "machine_id": 1, "actual_status": "exited",
+                                 "intended_status": "stopped"} for k in range(2)]
+        rc, out, err = self.run_main("up-keep", "quant", "902", "1.055", "300")
+        self.assertEqual(rc, SC.EXIT_REFUSE)                               # 정지 넷 = 합쳐 최대 4
+        self.assertIn("합쳐 최대", err)
+
+    def test_copy_refuses(self):
+        for a, b in (("777:/x/", "7102:/y/"),                         # 남의 이름표
+                     ("7102:/workspace/quant/", "7102:/workspace/import/")):   # 같은 인스턴스
+            rc, out, err = self.run_main("copy", a, b)
+            self.assertIn(rc, (SC.EXIT_REFUSE, SC.EXIT_USAGE), (a, b, err))
+        for bad in (("7102:/workspace/../etc/", "7101:/x/"), ("7102:workspace/", "7101:/x/"),
+                    ("7102:/a b/", "7101:/x/"), ("7102", "7101:/x/")):
+            self.assertEqual(self.run_main("copy", *bad)[0], SC.EXIT_USAGE, bad)
+        self.assertEqual(self.fake.copies, [])
+
+    def test_start_stop_only_ours(self):
+        self.assertEqual(self.run_main("start", "777")[0], SC.EXIT_REFUSE)
+        self.assertEqual(self.run_main("stop", "777")[0], SC.EXIT_REFUSE)
+        self.assertFalse([c for c in self.fake.calls if c["method"] == "PUT"])
+
+    def test_start_runs_when_free(self):
+        rc, out, err = self.run_main("start", "7102")
+        self.assertEqual(rc, 0, err)
+        ev = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual((ev["queued"], ev["after"]["actual_status"]), (False, "running"))
+
+
+class T36(Base):
+    """T36: roles.eval.nondc_reliability_min(선택 칸, 견본에는 없다)을 0.98 로 두면 eval·eval2 는 datacenter 면 신뢰도 ≥0.95,
+    아니면 verified·신뢰도 ≥0.98. serve·quant 그대로."""
+    R = dict(disk_space=500, cpu_ram=257000, num_gpus=4)
+
+    def setUp(self):
+        super().setUp()
+        c = json.loads(self.cfgp.read_text())
+        c["roles"]["eval"]["nondc_reliability_min"] = 0.98
+        self.cfgp.write_text(json.dumps(c))
+
+    def eval_offers(self):
+        r = self.R
+        self.fake.offers += [offer(601, 1.30, 6001, reliability=0.96, **r),                        # datacenter, 0.96 → 됨
+                             offer(602, 0.88, 6002, reliability=0.995, hosting_type=0, geolocation="TW", **r),   # 집 기계 0.995 → 됨
+                             offer(603, 0.80, 6003, reliability=0.97, hosting_type=0, **r),        # 집 기계 0.97 → 안 됨
+                             offer(604, 0.70, 6004, reliability=0.999, hosting_type=0, verification="unverified", **r)]
+
+    def test_config_and_judgement(self):
+        cfg = SC.load_config(str(self.cfgp))
+        self.assertTrue(SC.eval_relaxed(cfg, "eval") and SC.eval_relaxed(cfg, "eval2"))       # eval2 는 eval 것을 따른다
+        self.assertFalse(SC.eval_relaxed(cfg, "serve") or SC.eval_relaxed(cfg, "quant"))
+        home = offer(1, 0.9, 1, reliability=0.99, hosting_type=0, **self.R)
+        self.assertEqual(SC.offer_fails(cfg, home, "eval"), [])
+        self.assertEqual(SC.offer_fails(cfg, dict(home, reliability=0.97), "eval"), ["reliability_nondc"])
+        self.assertEqual(SC.offer_fails(cfg, dict(home, reliability=0.94), "eval"), ["reliability", "reliability_nondc"])
+        self.assertEqual(SC.offer_fails(cfg, dict(home, verification=None), "eval"), ["verified_nondc"])   # 칸 없음도 안 됨
+        self.assertIn("verified_nondc", SC.offer_fails(cfg, dict(home, verification="deverified"), "eval2"))
+        dc = dict(home, hosting_type=1, reliability=0.96)
+        self.assertEqual(SC.offer_fails(cfg, dc, "eval"), [])
+        self.assertEqual(SC.offer_fails(cfg, dict(dc, dc_search=False), "eval"), ["reliability_nondc"])  # 서버 datacenter 검색에 없으면 아님
+        self.assertEqual(SC.offer_fails(cfg, dict(home, num_gpus=1, dph_total=0.4), "serve"), ["datacenter"])   # serve 그대로
+        self.assertNotIn("datacenter", SC.offer_query(cfg, "eval"))
+        self.assertEqual(SC.offer_query(cfg, "eval")["reliability"], {"gte": 0.95})
+        self.assertIn("datacenter 아니면 verified·신뢰도 ≥0.98", SC.cond_view(cfg, "eval2"))
+        self.assertIn(", datacenter", SC.cond_view(cfg, "serve"))
+        c = json.loads(self.cfgp.read_text())
+        for bad in (0.9, 1.5, True, "0.98"):
+            c["roles"]["eval"]["nondc_reliability_min"] = bad
+            self.cfgp.write_text(json.dumps(c))
+            with self.assertRaises(SC.Stop):
+                SC.load_config(str(self.cfgp))
+        del c["roles"]["eval"]["nondc_reliability_min"]                                 # 칸이 없으면 옛 조건(datacenter 필수)
+        self.cfgp.write_text(json.dumps(c))
+        cfg2 = SC.load_config(str(self.cfgp))
+        self.assertFalse(SC.eval_relaxed(cfg2, "eval"))
+        self.assertEqual(SC.offer_fails(cfg2, home, "eval"), ["datacenter"])
+        c["roles"]["eval2"]["nondc_reliability_min"] = 0.98                             # eval2 에 따로 두지 않는다
+        self.cfgp.write_text(json.dumps(c))
+        with self.assertRaises(SC.Stop):
+            SC.load_config(str(self.cfgp))
+
+    def test_offers_two_searches_and_fields(self):
+        self.eval_offers()
+        rc, out, err = self.run_main("offers", "eval", "4")
+        self.assertEqual(rc, 0, out + err)
+        rows = [json.loads(l) for l in out.splitlines() if l.startswith("{")]
+        self.assertEqual([r["id"] for r in rows], [602, 601])
+        self.assertEqual([(r["hosting_type"], r["is_datacenter"]) for r in rows], [(0, False), (1, True)])
+        self.assertEqual(rows[0]["reliability"], 0.995)
+        bodies = self.fake.bundle_bodies[-2:]
+        self.assertNotIn("datacenter", bodies[0])
+        self.assertEqual(bodies[1]["datacenter"], {"eq": True})
+        self.assertIn("datacenter 아니면 verified·신뢰도 ≥0.98", out)
+        self.assertIn("stewart-cloud up eval 602 0.885 <계획>", out)
+
+    def test_up_non_datacenter_recorded(self):
+        self.eval_offers()
+        rc, out, err = self.run_main("up", "eval", "602", "0.885", "a-all")
+        self.assertEqual(rc, 0, out + err)
+        cur = json.loads((self.rec / "current-eval.json").read_text())
+        self.assertEqual((cur["machine_id"], cur["hosting_type"], cur["is_datacenter"], cur["reliability"], cur["verification"],
+                          cur["geolocation"], cur["gpu_name"]), (6002, 0, False, 0.995, "verified", "TW", "RTX 3090"))
+        ev = [json.loads(l) for l in (self.rec / "history.jsonl").read_text().splitlines()][-1]
+        self.assertEqual((ev["event"], ev["hosting_type"], ev["is_datacenter"]), ("up", 0, False))
+        self.assertEqual(self.run_main("up", "eval2", "603", "0.805", "a-all")[0], 69)       # 집 기계 0.97 은 거부
+        self.assertEqual(self.run_main("up", "eval2", "604", "0.705", "a-all")[0], 69)       # 집 기계 unverified 거부
+        rc, out, err = self.run_main("up", "eval2", "601", "1.305", "a-all")                 # datacenter 0.96 은 된다
+        self.assertEqual(rc, 0, out + err)
+        self.assertTrue(json.loads((self.rec / "current-eval2.json").read_text())["is_datacenter"])
+
+    def test_serve_still_datacenter(self):
+        self.fake.offers = [offer(701, 0.30, 7101, hosting_type=0, reliability=0.999)]
+        rc, out, err = self.run_main("offers")
+        self.assertEqual(rc, 69)
+        self.assertEqual(self.fake.bundle_bodies[0]["datacenter"], {"eq": True})
+        self.assertEqual(self.run_main("up", "701", "0.305")[0], 69)
 
 
 if __name__ == "__main__":

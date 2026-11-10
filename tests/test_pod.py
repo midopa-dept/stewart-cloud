@@ -342,6 +342,27 @@ class TPodHalt(unittest.TestCase):
         self.assertFalse((d / "tskey").exists())
         self.assertIn("HALT stop api HTTP 200", (d / "pod-log.tsv").read_text())
 
+    def test_pod_start_halt_holds_after_tailnet(self):
+        """v14: 테일넷이 붙은 뒤의 HALT 는 셸 비상구로 HALT_HOLD_MIN 분 기다린 뒤 정지(hold 면 더, stop-now 면 바로)."""
+        import subprocess
+        src = (self.ROOT / "pod-start.sh").read_text(encoding="utf-8")
+        part = src[src.index("HALT_WAIT_S=900"):src.index("trap 'halt")]
+        d = Path(tempfile.mkdtemp())
+        self.fakes(d)
+        (d / "vkey").write_text("INSTKEY123")
+        part = part.replace("/dev/shm/vast-hdr", f"{d}/vast-hdr")
+        script = (f"set -euo pipefail\nS={d}\nKEYF={d}/tskey\nVKEY={d}/vkey\n"
+                  "log() { printf '%s\\n' \"$*\" | tee -a \"$S/pod-log.tsv\"; }\n" + part
+                  + "\nTS_UP=1 TS_NAME=stewart-gpu-eval.x\nhalt \"가짜 이유\"\n")
+        r = subprocess.run(["bash", "-c", script], env={"PATH": f"{d}/bin:/usr/bin:/bin", "CONTAINER_ID": "1", "HALT_HOLD_MIN": "3"},
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("셸 비상구: 집에서 tailscale ssh root@stewart-gpu-eval.x 로 들어온다", r.stdout)
+        self.assertIn("셸 비상구: 3분 기다림 끝 — 정지", r.stdout)
+        calls = (d / "calls").read_text().splitlines()
+        self.assertEqual(calls[:3], ["sleep 60"] * 3)                           # 900초가 아니라 1분씩 세 번
+        self.assertIn("-X PUT", calls[3])
+
     def run_boot(self, env: dict, curl_body: str = "exit 22"):
         import subprocess
         d = Path(tempfile.mkdtemp())
@@ -699,6 +720,25 @@ class TIdleStopLanes(unittest.TestCase):
         lanes.check()
         self.assertEqual(lanes.summary(None)[0]["state"], "failed")
         self.assertIn("rc=137", lanes.summary(None)[0]["why"])
+
+    def test_spec_log_tsv(self):
+        """차선별 추측 디코딩 누계를 바뀐 차선만 한 줄씩(시각·차선·별칭·어댑터·초안 수·초안 토큰·수락 토큰·자리별)."""
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "lanes"))
+        with open(os.path.join(d, "lanes", "plan.txt"), "w") as f:
+            f.write("0 8000 0 qwen38-27b-demo-w4a16 hyperqwen-8cf642e 1\n1 8010 1 qwen38-27b-orig-w4a16q-int8h hyperqwen-8cf642e 1\n")
+        rows = self.m.plan_rows(d)
+        self.assertEqual(rows[1], ("qwen38-27b-orig-w4a16q-int8h", "hyperqwen-8cf642e"))
+        st = [{"k": 0, "spec_decode": {"drafts": 10, "draft_tokens": 30, "accepted_tokens": 21, "per_pos": [0.9, 0.7, 0.5]}},
+              {"k": 1, "spec_decode": None}]
+        last = {}
+        self.assertEqual(self.m.spec_tsv(d, st, rows, last, "T1"), 1)
+        self.assertEqual(self.m.spec_tsv(d, st, rows, last, "T2"), 0)                 # 그대로면 안 쓴다
+        st[0]["spec_decode"] = {"drafts": 12, "draft_tokens": 36, "accepted_tokens": 25, "per_pos": [0.9, 0.7, None]}
+        self.assertEqual(self.m.spec_tsv(d, st, rows, last, "T3"), 1)
+        lines = open(os.path.join(d, "spec-log.tsv")).read().splitlines()
+        self.assertEqual(lines, ["T1\t0\tqwen38-27b-demo-w4a16\thyperqwen-8cf642e\t10\t30\t21\t0.9,0.7,0.5",
+                                 "T3\t0\tqwen38-27b-demo-w4a16\thyperqwen-8cf642e\t12\t36\t25\t0.9,0.7,"])
 
     def test_spec_decode_metrics(self):
         text = ("# HELP x\nvllm:spec_decode_num_drafts_total{engine=\"0\",model_name=\"m\"} 100\n"
@@ -1066,7 +1106,7 @@ class TTemplateEnv(unittest.TestCase):
         # 대조가 표시 파일보다 먼저(대조에 실패하면 HALT 해 표시가 남지 않는다)
         self.assertLess(svsh.index('pin_check "$MDIR"'), svsh.index('echo "$M_REV" > "$MDIR/.stewart-rev"'))
         self.assertLess(sh.index("serving_fetch"), sh.index("export HF_HUB_OFFLINE=1"))
-        self.assertLess(sh.index("serving_prepare"), sh.index("trap - ERR"))       # 패치 실패는 HALT 구간 안
+        self.assertLess(sh.index("serving_prepare"), sh.rindex("trap - ERR"))      # 패치 실패는 HALT 구간 안(v14: halt 안에도 trap - ERR)
         self.assertIn('|| halt "$3 sha256', sh)
         self.assertIn('echo "$M_FAST_REV" > "$S/models/.fast-rev"', svsh)       # 재시작 때 다시 받지 않는다
         self.assertIn('grep -qxF "$SIG" "$QDONE"', sh)                       # 품질은 설정이 바뀔 때만

@@ -9,10 +9,17 @@
   stewart-cloud up eval <offer_id> <max_dph> <계획>           (계획 = serving models.toml plans 의 이름, env STEWART_PLAN)
   stewart-cloud status
   stewart-cloud down <instance_id>
-  stewart-cloud logs <instance_id> [daemon]                   (컨테이너 또는 데몬 로그 끝 200줄, 비밀 꼴은 가림)
+  stewart-cloud logs <instance_id> [daemon]                   (컨테이너 또는 데몬 로그 끝 200줄, 비밀 꼴은 가림. serve 는 시작 단계 줄만)
   stewart-cloud verify <묶음> <커밋 40자> <PS 64자>            (커밋에서 다시 만들어 묶음 폴더·PS 와 대조만. 키·망 없음)
   stewart-cloud publish <묶음> <커밋 40자> <PS 64자>           (verify + gist 올리기 + Vast 템플릿 만들기 + 지금 템플릿 전환)
   stewart-cloud templates                                       (기록한 템플릿을 API 로 읽어 기록과 같은지)
+  stewart-cloud balance                                         (계정 잔액 칸 credit·balance + 켜진 인스턴스 $/hr 합 + 바닥까지 어림. 읽기만)
+  stewart-cloud up-keep <역할> <offer_id> <max_dph> <디스크 GB>   (같은 역할의 정지 인스턴스를 지우지 않고 하나 더)
+  stewart-cloud copy <원본 id>:<경로> <대상 id>:<경로>           (인스턴스 → 인스턴스 복사, Vast copy_direct — 망 요금)
+  stewart-cloud start <instance_id> · stop <instance_id>        (켜기(GPU 값) · 정지/켜기 대기 취소(디스크 남음))
+  stewart-cloud retemplate <instance_id>                        (stewart- 인스턴스를 그 역할의 지금 템플릿으로 다시 만들고
+                                                                 [Vast update instance], 정지해 있으면 켠다. 디스크 보존은 Vast 문서에
+                                                                 없다: 결과를 logs 로 본다)
   묶음 = vN(serve·eval·eval2 공용 파드) 또는 quant-vN. 템플릿은 상태 파일 PREFIX/state/templates.json 이 정한다
   (config 의 template_hash_id 는 쓰지 않는다). up 은 그 템플릿을 API 로 읽어 PS·SB·Args 가 publish 기록과 같을 때만 빌린다.
 
@@ -35,9 +42,10 @@
 템플릿 찾기(GET /v0/template/, user_read)·만들기(POST, user_write)는 키체인 stewart-cloud.vast-template 이 있으면 그 키로, 없으면
 stewart-cloud.vast-api 로 부른다. user_write 는 Vast 에서 API 키·계정 env 만들기까지 같은 범주라 따로 둔 키를 권한다(README).
 GitHub gist 토큰(stewart-cloud.github-gist, fine-grained Gists read/write 만)은 publish 에서만, GitHub API Authorization 헤더에만 넣는다.
-지출 상한은 선불 크레딧으로 둔다(자동 충전 끔). 이 프로그램은 잔액을 보지 않는다. 겹 방어는 역할별 값 상한(config.roles.*.max_dph,
-코드 상한 ABS_MAX_DPH)과 역할마다 1개뿐이다.
-정지(stop)는 하지 않는다 — 늘 Destroy. 파드의 유휴 자동 정지 뒤에도 디스크 요금이 나가므로 down 이 필요하다.
+지출 상한은 선불 크레딧으로 둔다(자동 충전 끔). balance 는 잔액을 읽어 보이기만 하고, 빌리기를 막지 않는다. 겹 방어는 역할별 값 상한
+(config.roles.*.max_dph, 코드 상한 ABS_MAX_DPH)과 역할마다 켜진 것 1개뿐이다.
+down 은 늘 Destroy 다. 파드의 유휴 자동 정지 뒤에도 디스크 요금이 나가므로 down 이 필요하다.
+stop 은 정지·켜기 대기 취소만 한다(디스크 남음). start 는 켜기다(GPU 값, 그 기계 GPU 가 남에게 가 있으면 대기열에 걸린다).
 
 이름 겹침(Tailscale): down 은 Destroy 전에 파드의 POST :8001/logout 을 불러 테일넷에서 바로 빠지게 한다.
 up 은 그 역할의 이름(stewart-gpu·stewart-gpu-eval)이 아직 풀리면 거부한다(이전 노드가 남아 있으면 새 노드가 stewart-gpu-1 이 된다).
@@ -63,7 +71,7 @@ import urllib.request
 import zlib
 from datetime import datetime, timezone
 
-API = "https://console.vast.ai/api"   # 경로에 판(v0·v1)을 붙인다. 목록만 v1(v0 목록은 410 — 11/8 v12.10 실측), 나머지는 v0
+API = "https://console.vast.ai/api"   # 경로에 판(v0·v1)을 붙인다. 목록만 v1(v0 목록은 410), 나머지는 v0
 PREFIX = "/opt/stewart-cloud"   # 설치 폴더(root 소유). 사람만 고친다 — 세션·에이전트가 쓸 수 없는 곳에 둔다
 
 
@@ -155,9 +163,13 @@ ROLE_KEYS = {"num_gpus_min", "num_gpus_max", "max_dph", "disk", "ts_name"}
 QUANT_KEYS = {"gpu_names", "gpu_ram_gb_min", "cpu_ram_gb_min", "cpu_cores_min", "inet_down_min"}
 ROLE_KEYS_BY = {"serve": ROLE_KEYS, "eval": ROLE_KEYS, "eval2": {"ts_name"}, "quant": ROLE_KEYS | QUANT_KEYS}
 # 있어도 없어도 되는 칸(T25). eval 의 cpu_ram_gb_per_gpu_min: offer 의 RAM(MB) ≥ 이 값 × 장 수 × 1000. 없으면 RAM 조건 없음(T24 까지와 같다)
-ROLE_OPT_KEYS = {"serve": set(), "eval": {"cpu_ram_gb_per_gpu_min"}, "eval2": set(), "quant": {"template_hash_id", "datacenter"}}
+ROLE_OPT_KEYS = {"serve": set(), "eval": {"cpu_ram_gb_per_gpu_min", "nondc_reliability_min"}, "eval2": set(),
+                 "quant": {"template_hash_id", "datacenter"}}
+# T36: roles.eval.nondc_reliability_min(eval2 는 eval 것을 따른다). 있으면 eval·eval2 는
+# datacenter 이면 맨 위 reliability_min, datacenter 가 아니면 verified(문자열 "verified" 필수) + 신뢰도 ≥ 이 값.
+# datacenter 여부 = 서버 datacenter 검색 결과에 있고 + 응답 datacenter 칸(없으면 hosting_type == 1). serve·quant 는 그대로
 # T28: roles.quant.datacenter(참·거짓, 없으면 맨 위 datacenter). false 면 quant 검색·판정에서만 datacenter 조건을 뺀다
-# (verified·reliability 는 그대로). 변환은 공개 모델만, GPU→집은 ACL 로 막힘, 가중치 바꿔치기는 KL 검사가 잡는다(메인 T28).
+# (verified·reliability 는 그대로). 변환은 공개 모델만, GPU→집은 ACL 로 막힘, 가중치 바꿔치기는 KL 검사가 잡는다(T28).
 ROLE_NAMES = {"serve": "stewart-gpu", "eval": "stewart-gpu-eval", "eval2": "stewart-gpu-eval2",
               "quant": "stewart-quant"}   # 테일넷 이름 앞부분(pod 1a 의 표와 같다)
 ABS_MAX_DPH = 8.0          # 설정이 틀려도 넘지 못하는 값 상한($/hr, 인스턴스 하나)
@@ -173,6 +185,9 @@ _ID = re.compile(r"^[1-9][0-9]{0,11}$")
 _NGPU = re.compile(r"^[1-8]$")
 _PLAN = re.compile(r"^[a-z0-9][a-z0-9.-]{0,47}$")   # serving models.toml 의 계획 이름 꼴(pod-start 1b 와 같다)
 _DPH = re.compile(r"^[0-9]\.[0-9]{1,3}$")
+_DISK = re.compile(r"^[1-9][0-9]{1,3}$")              # up-keep 디스크 GB(20~2000, 역할 설정 disk 이상)
+_VRL = re.compile(r"^([1-9][0-9]{0,11}):(/(?:[A-Za-z0-9._-]+/)*(?:[A-Za-z0-9._-]+/?)?)$")   # copy <id>:<절대 경로>(.. 없음 — 아래)
+DISK_MAX = 2000
 _KEYLIKE = re.compile(r"[A-Za-z0-9_\-]{40,}")
 
 
@@ -232,6 +247,10 @@ def load_config(path: str = CONFIG) -> dict:
                                                    and not isinstance(rc["cpu_ram_gb_per_gpu_min"], bool)
                                                    and 1 <= rc["cpu_ram_gb_per_gpu_min"] <= 256):
             raise Stop(f"config.roles.{r}.cpu_ram_gb_per_gpu_min 은 1~256 정수", EXIT_OTHER)
+        if "nondc_reliability_min" in rc:
+            v = rc["nondc_reliability_min"]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not float(c["reliability_min"]) <= float(v) <= 1.0:
+                raise Stop(f"config.roles.{r}.nondc_reliability_min 은 reliability_min({c['reliability_min']})~1.0 수", EXIT_OTHER)
         lo, hi = rc["num_gpus_min"], rc["num_gpus_max"]
         if not (isinstance(lo, int) and isinstance(hi, int) and 1 <= lo <= hi <= MAX_GPUS):
             raise Stop(f"config.roles.{r}.num_gpus_min·max 는 1 ≤ min ≤ max ≤ {MAX_GPUS} 정수", EXIT_OTHER)
@@ -296,11 +315,13 @@ def parse_args(argv: list, cfg: dict | None = None) -> tuple:
     """(명령, 인자들). 형태가 다르면 Stop(64). cfg 가 있으면 up 의 max_dph 를 그 역할의 상한과 견준다."""
     usage = ("형태는 offers [serve|eval|eval2|quant] [4090] | offers eval|eval2 [4090] <장 수> | status | "
              "up [serve|eval|eval2|quant] <offer_id> <max_dph> | up eval|eval2 <offer_id> <max_dph> <계획> | down <instance_id> | "
-             "logs <instance_id> [daemon] | verify|publish <묶음 vN|quant-vN> <커밋 40자> <PS 64자> | templates 뿐이다")
+             "logs <instance_id> [daemon] | retemplate <instance_id> | up-keep <역할> <offer_id> <max_dph> <디스크 GB> | "
+             "copy <id>:<경로> <id>:<경로> | start|stop <instance_id> | verify|publish <묶음 vN|quant-vN> <커밋 40자> <PS 64자> | "
+             "templates | balance 뿐이다")
     if not argv:
         raise Stop(usage, EXIT_USAGE)
     cmd, rest = argv[0], argv[1:]
-    if cmd in ("status", "templates"):
+    if cmd in ("status", "templates", "balance"):
         if rest:
             raise Stop(usage, EXIT_USAGE)
         return cmd, ()
@@ -341,7 +362,26 @@ def parse_args(argv: list, cfg: dict | None = None) -> tuple:
         if v <= 0 or v > lim:
             raise Stop(f"max_dph {rest[1]} 이 {role} 설정 상한 {lim} 를 넘거나 0 이다", EXIT_USAGE)
         return cmd, (role, int(rest[0]), v, plan)
-    if cmd == "down":
+    if cmd == "up-keep":
+        if len(rest) != 4 or rest[0] not in ROLES or not _ID.match(rest[1]) or not _DPH.match(rest[2]) or not _DISK.match(rest[3]):
+            raise Stop(usage + " (up-keep <역할> <offer_id> <max_dph x.xxx> <디스크 GB>)", EXIT_USAGE)
+        v, disk = float(rest[2]), int(rest[3])
+        lim = float(role_cfg(cfg, rest[0])["max_dph"]) if cfg is not None else ABS_MAX_DPH
+        if v <= 0 or v > lim:
+            raise Stop(f"max_dph {rest[2]} 이 {rest[0]} 설정 상한 {lim} 를 넘거나 0 이다", EXIT_USAGE)
+        lo = int(role_cfg(cfg, rest[0])["disk"]) if cfg is not None else 20
+        if not lo <= disk <= DISK_MAX:
+            raise Stop(f"디스크 {disk} GB 는 {lo}~{DISK_MAX} 밖이다(역할 설정 disk 이상)", EXIT_USAGE)
+        return cmd, (rest[0], int(rest[1]), v, disk)
+    if cmd == "copy":
+        ms = [_VRL.match(x) for x in rest]
+        if len(rest) != 2 or not all(ms) or any(".." in x.split("/") for x in rest):
+            raise Stop(usage + " (copy <원본 id>:</절대/경로/> <대상 id>:</절대/경로/>, .. 없이)", EXIT_USAGE)
+        (a, pa), (b, pb) = ms[0].groups(), ms[1].groups()
+        if a == b:
+            raise Stop("원본과 대상이 같은 인스턴스다", EXIT_USAGE)
+        return cmd, (int(a), pa, int(b), pb)
+    if cmd in ("down", "retemplate", "start", "stop"):
         if len(rest) != 1 or not _ID.match(rest[0]):
             raise Stop(usage + " (instance_id 는 숫자)", EXIT_USAGE)
         return cmd, (int(rest[0]),)
@@ -402,7 +442,7 @@ def read_template_key():
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 환경의 프록시 설정을 쓰지 않는다
 
 
-_PATHS = {   # (방법, 경로 꼴) 일곱만
+_PATHS = {   # (방법, 경로 꼴) 열만
     ("POST", re.compile(r"/v0/bundles/")),                      # offer 찾기
     ("PUT", re.compile(r"/v0/asks/[1-9][0-9]{0,11}/")),          # 만들기
     ("DELETE", re.compile(r"/v0/instances/[1-9][0-9]{0,11}/")),  # 지우기
@@ -410,6 +450,10 @@ _PATHS = {   # (방법, 경로 꼴) 일곱만
     ("PUT", re.compile(r"/v0/instances/request_logs/[1-9][0-9]{0,11}/")),   # 로그 요청(T23, vast-cli logs 와 같다)
     ("GET", re.compile(r"/v0/template/")),                      # 템플릿 찾기(hash_id 로, T27 — user_read)
     ("POST", re.compile(r"/v0/template/")),                     # 템플릿 만들기(publish 만, T27 — user_write)
+    ("GET", re.compile(r"/v0/users/current")),                  # 사용자 정보(balance 만 — user_read. vast-cli show user 와 같은 경로)
+    ("PUT", re.compile(r"/v0/instances/update_template/[1-9][0-9]{0,11}/")),   # 템플릿으로 다시 만들기(retemplate — vast-cli update instance)
+    ("PUT", re.compile(r"/v0/instances/[1-9][0-9]{0,11}/")),    # 켜기·정지(retemplate·start·stop, 본문 {"state": "running"|"stopped"} 만 — vast-cli start/stop instance)
+    ("PUT", re.compile(r"/v0/commands/copy_direct/")),          # 인스턴스 → 인스턴스 복사(copy, T32 — vast-cli copy 의 원격↔원격 갈래)
 }
 _QUERY_OK = {"/v1/instances/": {"limit", "order_by", "select_filters", "after_token"}, "/v0/template/": {"select_filters"}}
 _TOKEN = re.compile(r"[A-Za-z0-9+/=_\-]{1,2048}")
@@ -419,6 +463,8 @@ def vast(key: str, method: str, path: str, body: dict | None = None, timeout: fl
     """Vast API 를 부른다. 방법·경로는 _PATHS 만, 쿼리는 v1 목록·템플릿 찾기에만(값 꼴도 본다)."""
     if not any(m == method and rx.fullmatch(path) for m, rx in _PATHS):
         raise Stop(f"허용하지 않은 경로: {method} {path}", EXIT_OTHER)
+    if method == "PUT" and re.fullmatch(r"/v0/instances/[0-9]+/", path) and body not in ({"state": "running"}, {"state": "stopped"}):
+        raise Stop("인스턴스 PUT 은 켜기·정지({\"state\": \"running\"|\"stopped\"})만 한다", EXIT_OTHER)
     url = API + path
     if query:
         if path not in _QUERY_OK or set(query) - _QUERY_OK[path]:
@@ -516,7 +562,8 @@ def num_gpus_query(rc: dict, n: int | None = None) -> dict:
     return {"eq": lo} if lo == hi else {"gte": lo, "lte": hi}
 
 
-def offer_query(cfg: dict, role: str = "serve", gpu_name: str | None = None, n: int | None = None) -> dict:
+def offer_query(cfg: dict, role: str = "serve", gpu_name: str | None = None, n: int | None = None,
+                dc_only: bool = False) -> dict:
     """offers 와 up 이 같이 쓰는 검색식 하나(up 도 이 결과에서 id 로 고른다). 역할마다 장 수·값 상한만 다르다.
     eval(T25): 디스크(disk_space ≥ 요청 disk)와, 설정에 있으면 RAM(장당 하한 × 가장 적은 장 수)을 서버 검색에도 건다."""
     rc = role_cfg(cfg, role)
@@ -527,7 +574,7 @@ def offer_query(cfg: dict, role: str = "serve", gpu_name: str | None = None, n: 
          "num_gpus": num_gpus_query(rc, n),
          "cuda_max_good": {"gte": float(cfg["cuda_max_good_min"])}, "reliability": {"gte": float(cfg["reliability_min"])},
          "dph_total": {"lte": float(rc["max_dph"])}, "order": [["dph_total", "asc"]]}
-    if want_datacenter(cfg, role):
+    if want_datacenter(cfg, role) or dc_only:
         q["datacenter"] = {"eq": True}
     if role == "quant":   # 변환 기계 조건. gpu_ram·cpu_ram 은 MB(vast-cli offers_mult 1000), disk_space GB, inet_down Mb/s
         q |= {"gpu_ram": {"gte": int(rc["gpu_ram_gb_min"]) * 1000}, "cpu_ram": {"gte": int(rc["cpu_ram_gb_min"]) * 1000},
@@ -543,7 +590,35 @@ def offer_query(cfg: dict, role: str = "serve", gpu_name: str | None = None, n: 
 def want_datacenter(cfg: dict, role: str) -> bool:
     """datacenter 조건을 걸지(T28: quant 만 roles.quant.datacenter 로 끌 수 있다)."""
     rc = (cfg.get("roles") or {}).get(role) or {}
+    if eval_relaxed(cfg, role):      # T36: 검색에서는 datacenter 를 빼고, 판정은 offer_fails 가 datacenter 여부로 나눈다
+        return False
     return bool(rc["datacenter"]) if role == "quant" and "datacenter" in rc else bool(cfg["datacenter"])
+
+
+def eval_relaxed(cfg: dict, role: str) -> bool:
+    """T36: eval·eval2 이고 roles.eval.nondc_reliability_min 이 있으며 맨 위 datacenter 가 true 일 때."""
+    rc = (cfg.get("roles") or {}).get(role) or {}
+    return role in EVAL_LIKE and rc.get("nondc_reliability_min") is not None and bool(cfg["datacenter"])
+
+
+def offer_is_dc(o: dict) -> bool:
+    """datacenter 인지. 응답 datacenter 칸(없으면 hosting_type == 1)과, search_offers 가 붙인 서버 datacenter 검색 결과(dc_search)
+    둘 다 참일 때만 참(어긋나면 datacenter 아님 — 더 엄격한 신뢰도 쪽)."""
+    f = o.get("datacenter")
+    typ = bool(f) if f is not None else o.get("hosting_type") == 1
+    return typ and bool(o.get("dc_search", True))
+
+
+def search_offers(key: str, cfg: dict, role: str, gpu_name: str | None = None, n: int | None = None) -> list:
+    """offers·up 이 같이 쓰는 검색. T36 풀림이면 datacenter 조건 없는 검색 + datacenter 검색 둘을 합치고 offer 마다 dc_search 를 붙인다."""
+    offers = list(vast(key, "POST", "/v0/bundles/", offer_query(cfg, role, gpu_name, n)).get("offers") or [])
+    if eval_relaxed(cfg, role):
+        dc = list(vast(key, "POST", "/v0/bundles/", offer_query(cfg, role, gpu_name, n, dc_only=True)).get("offers") or [])
+        dc_ids = {int(o.get("id") or 0) for o in dc}
+        seen = {int(o.get("id") or 0) for o in offers}
+        offers += [o for o in dc if int(o.get("id") or 0) not in seen]
+        offers = [{**o, "dc_search": int(o.get("id") or 0) in dc_ids} for o in offers]
+    return offers
 
 
 def gpu_names(cfg: dict, role: str, gpu_name: str | None = None) -> list:
@@ -570,6 +645,11 @@ def offer_fails(cfg: dict, o: dict, role: str = "serve", gpu_name: str | None = 
         (float(o.get("reliability") or o.get("reliability2") or 0) >= float(cfg["reliability_min"]), "reliability"),
         (float(o.get("dph_total") or 99) <= float(rc["max_dph"]), "dph_total"),
     ]
+    if eval_relaxed(cfg, role) and not offer_is_dc(o):
+        # T36: datacenter 가 아니면 신뢰도 ≥ nondc_reliability_min 과 verification 문자열 "verified"(칸 없음도 안 됨)
+        checks += [(float(o.get("reliability") or o.get("reliability2") or 0) >= float(rc["nondc_reliability_min"]),
+                    "reliability_nondc"),
+                   (o.get("verification") == "verified", "verified_nondc")]
     if role == "quant":
         def num(k):
             try:
@@ -591,7 +671,7 @@ def offer_fails(cfg: dict, o: dict, role: str = "serve", gpu_name: str | None = 
         if rc.get("cpu_ram_gb_per_gpu_min"):
             checks.append((num_e("cpu_ram") >= int(rc["cpu_ram_gb_per_gpu_min"]) * int(o.get("num_gpus") or 0) * 1000, "cpu_ram"))
     if want_datacenter(cfg, role):
-        # 응답에 datacenter 칸은 없다(검색 조건일 뿐, 문서). v12.10 실측의 datacenter 검색 결과는 hosting_type 1 이었다.
+        # 응답에 datacenter 칸은 없다(검색 조건일 뿐, 문서). datacenter 검색 결과는 hosting_type 1 이었다(실측).
         # 칸이 오면 그 값을, 없으면 hosting_type == 1 을 본다(서버의 datacenter 검색 조건에 기대는 몫이 남음, README)
         dc = o.get("datacenter")
         checks.append((bool(dc) if dc is not None else o.get("hosting_type") == 1, "datacenter"))
@@ -686,15 +766,15 @@ def record(event: dict, record_dir: str = RECORD_DIR, current: dict | None = Non
 def do_offers(key: str, cfg: dict, record_dir: str = RECORD_DIR, role: str = "serve", ref_gpu: str | None = None,
               n: int | None = None) -> int:
     rc = role_cfg(cfg, role)
-    r = vast(key, "POST", "/v0/bundles/", offer_query(cfg, role, ref_gpu, n))
-    offers = [o for o in (r.get("offers") or []) if not offer_ok(cfg, o, role, ref_gpu, n)]
+    offers = [o for o in search_offers(key, cfg, role, ref_gpu, n) if not offer_ok(cfg, o, role, ref_gpu, n)]
     ranked = rank_offers(offers, history_machines(record_dir), float(cfg["band_dph"]))
     present = name_present(rc["ts_name"])
     say(f"[{role}] 조건에 맞는 offer {len(ranked)}개({cond_view(cfg, role, ref_gpu, n)}). 이름 {rc['ts_name']}: "
         + ("아직 테일넷에 있다 — up 이 거부된다(최대 60분 뒤 자동으로 지워짐)" if present else "비어 있음"))
     prev = set(history_machines(record_dir))
     for o in ranked[: int(cfg["offers_shown"])]:
-        emit({**pick({**o, "dph_per_gpu": round(per_gpu(o), 4)}, OFFER_FIELDS), "used_before": o.get("machine_id") in prev})
+        emit({**pick({**o, "dph_per_gpu": round(per_gpu(o), 4)}, OFFER_FIELDS), "is_datacenter": offer_is_dc(o),
+              "used_before": o.get("machine_id") in prev})
     if ref_gpu:
         say(f"참고 보기다 — up 은 {cfg['gpu_name']} 만 빌린다")
     elif ranked:
@@ -721,6 +801,10 @@ def cond_view(cfg: dict, role: str, ref_gpu: str | None = None, n: int | None = 
     if role == "quant":
         out += (f", gpu_ram ≥{rc['gpu_ram_gb_min']}GB, RAM ≥{rc['cpu_ram_gb_min']}GB, CPU ≥{rc['cpu_cores_min']}, "
                 f"디스크 ≥{rc['disk']}GB, 망 ≥{rc['inet_down_min']}Mb/s")
+    if eval_relaxed(cfg, role):
+        return out + (f", cuda ≥{cfg['cuda_max_good_min']}" + (", verified" if cfg["verified"] else "")
+                      + f", datacenter 면 신뢰도 ≥{cfg['reliability_min']} · datacenter 아니면 verified·신뢰도 "
+                      f"≥{rc['nondc_reliability_min']}")
     return out + f", 신뢰도 ≥{cfg['reliability_min']}, cuda ≥{cfg['cuda_max_good_min']}" + \
         (", verified" if cfg["verified"] else "") + (", datacenter" if want_datacenter(cfg, role) else ", datacenter 조건 없음")
 
@@ -796,6 +880,16 @@ def model_fetch_view(st: dict | None):
     return out or None
 
 
+def serve_state(st: dict) -> str:
+    """serve 한 줄: HALT(pod_log 에 HALT: 줄) / ready(vLLM /metrics 를 읽음) / loading(그 전). 단계 줄의 마지막 하나를 붙인다."""
+    pl = [str(x) for x in (st.get("pod_log") or [])]
+    halt = [x for x in pl if "\tHALT: " in x or x.startswith("HALT")]
+    if halt:
+        return "HALT — " + halt[-1].split("\t", 1)[-1][:200]
+    last = pl[-1].split("\t", 1)[-1][:160] if pl else "-"
+    return ("ready" if st.get("seen_metrics") else "loading") + f" — 마지막 단계: {last}"
+
+
 def do_status(key: str, cfg: dict) -> int:
     inst = ours(cfg, list_instances(key))
     say(f"{cfg['label_prefix']} 인스턴스 {len(inst)}개(역할마다 1개, 합쳐 최대 {MAX_TOTAL}개)")
@@ -821,8 +915,35 @@ def do_status(key: str, cfg: dict) -> int:
         idle = idle_left_view(st)
         say(f"[{r}] 이름 {n}: 테일넷에 있다" + (f" — 쉬다 정지까지 {idle}" if idle else "")
             + (f" — model_fetch {json.dumps(mf, ensure_ascii=False)}" if mf else ""))
+        if r == "serve" and st is not None:
+            say(f"[serve] {serve_state(st)}")
         for line in lane_fail_lines(st):
             say(f"[{r}] {line}")
+    return 0
+
+
+# 잔액: GET /api/v0/users/current(vast-cli show user 와 같은 경로, user_read). 응답에는 api_key·이메일·이름·청구 주소도 오므로
+# 아래 두 숫자 칸만 꺼내고 나머지는 버린다(출력·기록 없음). 두 칸 가운데 어느 것이 콘솔의 "남은 크레딧"인지는 문서에 없다
+# (vast-cli user_fields 는 둘 다 보인다) — 첫 실행에서 콘솔 Billing 의 값과 대조해 정한다. 그 전에는 둘 다 보이고, 어림은 credit 으로.
+BALANCE_FIELDS = ("credit", "balance")
+
+
+def do_balance(ukey: str, key: str, cfg: dict) -> int:
+    u = vast(ukey, "GET", "/v0/users/current")
+    vals = {k: (round(float(u[k]), 4) if isinstance(u.get(k), (int, float)) and not isinstance(u.get(k), bool) else None)
+            for k in BALANCE_FIELDS}
+    del u
+    inst = list_instances(key)                          # 계정 전체(이름표와 상관없이 돈이 나가는 것은 다 센다)
+    run = [i for i in inst if not is_stopped(i)]
+    stopped = [i for i in inst if is_stopped(i)]
+    dph = round(sum(float(i.get("dph_total") or 0) for i in run), 4)
+    cr = vals["credit"]
+    left = round(cr / dph, 1) if (cr is not None and cr > 0 and dph > 0) else None
+    emit({"event": "balance", **vals, "running": len(run), "running_dph": dph, "stopped": len(stopped),
+          "hours_left_at_running_dph": left,
+          "mine": [{"role": role_of(cfg, i.get("label")), "id": i.get("id"), "dph_total": i.get("dph_total"),
+                    "stopped": is_stopped(i)} for i in ours(cfg, inst)]})
+    say("잔액 어림은 credit 칸 기준이다(첫 실행에서 콘솔 Billing 의 값과 대조). 정지 인스턴스의 디스크 요금은 running_dph 에 없다")
     return 0
 
 
@@ -861,7 +982,10 @@ def role_env(role: str, n: int, plan: str | None = None) -> dict:
 
 
 def do_up(key: str, cfg: dict, role: str, offer_id: int, max_dph: float, record_dir: str = RECORD_DIR,
-          plan: str | None = None, tkey: str | None = None, state_dir: str = STATE_DIR) -> int:
+          plan: str | None = None, tkey: str | None = None, state_dir: str = STATE_DIR, keep: bool = False,
+          disk: int | None = None) -> int:
+    """keep(T32 up-keep): 같은 역할의 정지 인스턴스를 지우지 않고 하나 더 빌린다(켜진 같은 역할이 있으면 거부, 합쳐 MAX_TOTAL).
+    disk: 디스크 GB(없으면 역할 설정 disk)."""
     # T27: 지금 템플릿(상태 파일)을 API 로 읽어 PS·SB·Args 가 publish 기록과 같을 때만 — 다르면 아무것도 지우거나 빌리지 않는다
     tpl = check_up_template(tkey or key, load_state(state_dir), role)
     rc = role_cfg(cfg, role)
@@ -869,6 +993,13 @@ def do_up(key: str, cfg: dict, role: str, offer_id: int, max_dph: float, record_
         raise Stop(f"max_dph 가 {role} 설정 상한 {rc['max_dph']} 를 넘는다", EXIT_USAGE)
     mine = ours(cfg, list_instances(key))
     same = [i for i in mine if role_of(cfg, i.get("label")) == role]
+    if keep:
+        on = [i for i in same if not is_stopped(i)]
+        if on:
+            raise Stop(f"켜진 {role} 인스턴스가 있다: {', '.join(str(i.get('id')) for i in on)} — up-keep 은 같은 역할이 모두 정지일 때만", EXIT_REFUSE)
+        if same:
+            say(f"같은 역할({role})의 정지 인스턴스 {', '.join(str(i.get('id')) for i in same)} 는 지우지 않고 둔다(up-keep)")
+        same = []
     if same and all(is_stopped(i) for i in same):
         # T24: 같은 역할의 정지(쉬다 정지·HALT 정지) 인스턴스는 디스크 요금만 새므로 먼저 지우고 빌린다(사람이 손으로 down 하던 것)
         for i in same:
@@ -887,9 +1018,8 @@ def do_up(key: str, cfg: dict, role: str, offer_id: int, max_dph: float, record_
         raise Stop(f"이름 {rc['ts_name']} 이 아직 테일넷에 있다(이전 노드). 새 노드가 다른 이름(-1)이 되므로 빌리지 않는다. "
                    "최대 60분 기다리거나 Tailscale 관리 화면에서 그 기기를 지운다", EXIT_REFUSE)
     # offers 와 같은 검색식(같은 조건·같은 상한)으로 다시 받아 그 안에서 id 로 고른다.
-    # 검색식에 id 조건을 넣으면 Vast 가 받지 않거나 다르게 풀어 늘 빈 목록이었다(11/8 22:4x 실측, T19).
-    r = vast(key, "POST", "/v0/bundles/", offer_query(cfg, role))
-    found = [o for o in (r.get("offers") or []) if int(o.get("id") or 0) == offer_id]
+    # 검색식에 id 조건을 넣으면 Vast 가 받지 않거나 다르게 풀어 늘 빈 목록이었다(실측, T19).
+    found = [o for o in search_offers(key, cfg, role) if int(o.get("id") or 0) == offer_id]
     if not found:
         raise Stop(f"offer {offer_id} 가 지금 {role} 조건(값 상한 {rc['max_dph']} 포함)에 맞는 목록에 없다(빌려 갔거나 조건 밖). "
                    f"offers {role} 를 다시 본다", EXIT_REFUSE)
@@ -907,7 +1037,7 @@ def do_up(key: str, cfg: dict, role: str, offer_id: int, max_dph: float, record_
                        f"(config.eval_total_max_dph)을 넘는다: {', '.join(str(i.get('id')) for i in on) or '-'}", EXIT_REFUSE)
     n = int(o["num_gpus"])
     label = role_label(cfg, role) + datetime.now().strftime("%Y%m%d-%H%M")
-    body = {"template_hash_id": tpl, "label": label, "disk": int(rc["disk"]), "env": role_env(role, n, plan)}
+    body = {"template_hash_id": tpl, "label": label, "disk": int(disk or rc["disk"]), "env": role_env(role, n, plan)}
     c = vast(key, "PUT", f"/v0/asks/{offer_id}/", body)
     iid = c.get("new_contract")
     if not c.get("success") or not iid:
@@ -919,11 +1049,15 @@ def do_up(key: str, cfg: dict, role: str, offer_id: int, max_dph: float, record_
             machine = got[0].get("machine_id") or machine
             break
         time.sleep(2)
-    cur = {"role": role, "plan": plan, "template_hash_id": tpl, "instance_id": int(iid), "machine_id": machine, "offer_id": offer_id, "num_gpus": n,
+    cur = {"role": role, "plan": plan, "keep": keep, "disk": int(disk or rc["disk"]), "template_hash_id": tpl, "instance_id": int(iid), "machine_id": machine, "offer_id": offer_id, "num_gpus": n,
            "dph_total": o.get("dph_total"), "label": label, "ts_name": rc["ts_name"], "geolocation": o.get("geolocation"),
+           # T36: 어느 장비에서 돌렸는지 — 빌린 순간의 offer 값
+           "hosting_type": o.get("hosting_type"), "is_datacenter": offer_is_dc(o), "reliability": o.get("reliability"),
+           "verification": o.get("verification"), "gpu_name": o.get("gpu_name"), "cuda_max_good": o.get("cuda_max_good"),
+           "inet_down": o.get("inet_down"),
            "created": datetime.now().astimezone().isoformat(timespec="seconds"),
            "state": "created", "used_before": machine in history_machines(record_dir)}
-    record({"event": "up", **cur}, record_dir, current=cur, current_name=current_file(role))
+    record({"event": "up-keep" if keep else "up", **cur}, record_dir, current=cur, current_name=current_file(role))
     wait = "uv run stewart cloud wait" if role == "serve" else f"/status 확인: http://{rc['ts_name']}:8001/status"
     say(f"빌림[{role}]: instance {iid}, machine {machine}, GPU {n}장, {float(o['dph_total']):.4f}$/hr, label {label}. 기다리기: {wait}")
     emit(cur)
@@ -941,7 +1075,7 @@ def do_down(key: str, cfg: dict, instance_id: int, record_dir: str = RECORD_DIR)
     # 역할을 모르는 stewart- 이름표(손으로 붙인 것)는 이름을 쥐었는지 알 수 없다 — logout 없이 Destroy 만(아래 holder None 과 같다)
     ts_name = role_cfg(cfg, role)["ts_name"] if role else None
     # 이름을 쥔 pod 가 지우려는 그 인스턴스일 때만 logout 한다.
-    # (손으로 빌린 다른 인스턴스가 이름을 쥐고 있으면 그쪽이 테일넷에서 빠져 그쪽 일이 끊긴다 — 메인 검토 11/8 14:0x)
+    # (손으로 빌린 다른 인스턴스가 이름을 쥐고 있으면 그쪽이 테일넷에서 빠져 그쪽 일이 끊긴다)
     holder = pod_instance(ts_name, int(cfg["logout_port"])) if ts_name else None
     gone = False
     if holder == str(instance_id):
@@ -985,7 +1119,135 @@ def do_down(key: str, cfg: dict, instance_id: int, record_dir: str = RECORD_DIR)
     return 0 if not still else EXIT_OTHER
 
 
+# ── 템플릿으로 다시 만들기(T30-1R) ────────────────────────
+# 정지한 변환 인스턴스에 새 묶음을 넣는 길. Vast update instance(PUT /instances/update_template/<id>/ {id, template_hash_id})
+# 는 "Update/recreate an instance from a new/updated template" 라고만 적혀 있다 — 디스크(/workspace)가 남는지는 문서에 없다.
+# 그래서 결과를 그대로 찍고(새 id 가 생겼는지 포함), 켜진 뒤 logs 로 판정한다. 템플릿은 up 과 같이 publish 기록과 같을 때만.
+RETPL_FIELDS = ("id", "label", "machine_id", "actual_status", "cur_state", "intended_status", "template_hash_id",
+                "image_uuid", "status_msg", "disk_space")
+
+
+def inst_view(i: dict) -> dict:
+    return {k: i.get(k) for k in RETPL_FIELDS if k in i}
+
+
+def do_retemplate(key: str, tkey: str, cfg: dict, instance_id: int, record_dir: str = RECORD_DIR,
+                  state_dir: str = STATE_DIR) -> int:
+    inst = list_instances(key)
+    hit = [i for i in inst if int(i.get("id") or 0) == instance_id]
+    if not hit:
+        raise Stop(f"instance {instance_id} 가 목록에 없다(이미 지워졌거나 남의 것)", EXIT_REFUSE)
+    label = str(hit[0].get("label") or "")
+    if not label.startswith(cfg["label_prefix"]):
+        raise Stop(f"instance {instance_id} 는 라벨이 {cfg['label_prefix']} 가 아니다 — 건드리지 않는다", EXIT_REFUSE)
+    role = role_of(cfg, label)
+    if not role:
+        raise Stop(f"instance {instance_id} 의 이름표 {label} 로 역할을 모른다 — 어느 템플릿인지 정할 수 없다", EXIT_REFUSE)
+    h = check_up_template(tkey, load_state(state_dir), role)
+    before = inst_view(hit[0])
+    say(f"다시 만들기 전: {json.dumps(before, ensure_ascii=False)}")
+    r = vast(key, "PUT", f"/v0/instances/update_template/{instance_id}/", {"id": instance_id, "template_hash_id": h})
+    upd = r.get("updated_instance") if isinstance(r.get("updated_instance"), dict) else {}
+    say(f"update_template 응답: success={r.get('success')} msg={scrub(str(r.get('msg') or '')[:200])!r} "
+        f"updated={json.dumps(inst_view(upd), ensure_ascii=False)}")
+    if r.get("success") is False:
+        raise Stop("update_template 가 실패라고 답했다 — 아무것도 켜지 않는다(status 로 본다)", EXIT_OTHER)
+    after, new_ids = None, []
+    for _ in range(15):
+        cur = ours(cfg, list_instances(key))
+        same = [i for i in cur if int(i.get("id") or 0) == instance_id]
+        new_ids = [int(i.get("id")) for i in cur if i.get("label") == label and int(i.get("id") or 0) != instance_id]
+        if same or new_ids:
+            after = same[0] if same else [i for i in cur if int(i.get("id") or 0) == new_ids[0]][0]
+            break
+        time.sleep(2)
+    if after is None:
+        raise Stop(f"다시 만든 뒤 이름표 {label} 인스턴스가 목록에 없다 — status 로 본다", EXIT_OTHER)
+    target = int(after.get("id"))
+    say(f"다시 만든 뒤: {json.dumps(inst_view(after), ensure_ascii=False)}"
+        + (f" — id 가 바뀌었다({instance_id} → {target})" if target != instance_id else " — id 그대로"))
+    started = None
+    if is_stopped(after):
+        s = vast(key, "PUT", f"/v0/instances/{target}/", {"state": "running"})
+        started = bool(s.get("success", True))
+        say(f"정지해 있어 켰다: success={s.get('success')} msg={scrub(str(s.get('msg') or '')[:200])!r}"
+            + ("" if started else " — 켜지지 않았다: 콘솔에서 그 카드의 Start 를 누른다"))
+        for _ in range(10):
+            got = [i for i in list_instances(key) if int(i.get("id") or 0) == target]
+            if got and not is_stopped(got[0]):
+                after = got[0]
+                break
+            time.sleep(3)
+        else:
+            if got:
+                after = got[0]
+    say(f"지금: {json.dumps(inst_view(after), ensure_ascii=False)}. 디스크가 남았는지는 logs {target} 의 첫 줄들로 본다")
+    ev = {"event": "retemplate", "role": role, "instance_id": instance_id, "now_id": target, "template_hash_id": h,
+          "label": label, "machine_id": after.get("machine_id"), "started": started, "before": before, "after": inst_view(after)}
+    record(ev, record_dir)
+    emit(ev)
+    return 0
+
+
+# ── 켜기·정지·복사(T32) ────────────────────────────────────
+
+def stewart_instance(key: str, cfg: dict, instance_id: int) -> dict:
+    hit = [i for i in list_instances(key) if int(i.get("id") or 0) == instance_id]
+    if not hit:
+        raise Stop(f"instance {instance_id} 가 목록에 없다(이미 지워졌거나 남의 것)", EXIT_REFUSE)
+    if not str(hit[0].get("label") or "").startswith(cfg["label_prefix"]):
+        raise Stop(f"instance {instance_id} 는 라벨이 {cfg['label_prefix']} 가 아니다 — 건드리지 않는다", EXIT_REFUSE)
+    return hit[0]
+
+
+def do_state(key: str, cfg: dict, instance_id: int, want: str, record_dir: str = RECORD_DIR) -> int:
+    """start(want=running): 켠다 — GPU 가 남에게 가 있으면 Vast 가 대기열에 둔다(state change queued). stop(want=stopped): 정지하거나
+    켜기 대기를 취소한다(Vast 문서: scheduling 이 오래면 stop 을 다시 눌러 취소). 디스크는 남는다(정지는 Destroy 가 아니다)."""
+    i = stewart_instance(key, cfg, instance_id)
+    before = inst_view(i)
+    say(f"전: {json.dumps(before, ensure_ascii=False)}")
+    r = vast(key, "PUT", f"/v0/instances/{instance_id}/", {"state": want})
+    msg = scrub(str(r.get("msg") or "")[:200])
+    queued = "queued" in msg.lower()
+    say(f"{'켜기' if want == 'running' else '정지'} 응답: success={r.get('success')} msg={msg!r}"
+        + (" — 그 기계의 GPU 가 남에게 가 있어 대기열에 들어갔다(풀리면 켜진다). 취소는 stop" if queued else ""))
+    after = i
+    for _ in range(10):
+        got = [x for x in list_instances(key) if int(x.get("id") or 0) == instance_id]
+        if got:
+            after = got[0]
+            if (want == "running") != is_stopped(after):
+                break
+        time.sleep(3)
+    say(f"지금: {json.dumps(inst_view(after), ensure_ascii=False)}")
+    ev = {"event": "start" if want == "running" else "stop", "instance_id": instance_id, "label": i.get("label"),
+          "success": r.get("success"), "msg": msg, "queued": queued, "before": before, "after": inst_view(after)}
+    record(ev, record_dir)
+    emit(ev)
+    return 0 if r.get("success", True) or queued else EXIT_OTHER
+
+
+def do_copy(key: str, cfg: dict, src: int, spath: str, dst: int, dpath: str, record_dir: str = RECORD_DIR) -> int:
+    """인스턴스 → 인스턴스 복사(Vast copy_direct, vast-cli copy 의 원격↔원격 갈래와 같은 본문). 둘 다 stewart- 이름표만.
+    원본은 정지해 있어도 된다(콘솔 복사로 확인). 진행은 Vast 가 인스턴스 상태 줄(status_msg)에 적는다 — status 로 본다."""
+    a, b = stewart_instance(key, cfg, src), stewart_instance(key, cfg, dst)
+    say(f"원본 {src}:{spath} {json.dumps(inst_view(a), ensure_ascii=False)}")
+    say(f"대상 {dst}:{dpath} {json.dumps(inst_view(b), ensure_ascii=False)}")
+    if is_stopped(b):
+        say(f"주의: 대상 {dst} 가 정지 상태다 — 받는 쪽이 켜져 있어야 들어갈 수 있다(Vast 가 거부하면 아래 msg 에 나온다)")
+    body = {"client_id": "me", "src_id": str(src), "dst_id": str(dst), "src_path": spath, "dst_path": dpath}
+    r = vast(key, "PUT", "/v0/commands/copy_direct/", body)
+    msg = scrub(str(r.get("msg") or "")[:200])
+    say(f"copy_direct 응답: success={r.get('success')} msg={msg!r}"
+        + (" — 시작했다. 진행은 status 의 status_msg(약 30초 늦게)" if r.get("success") else ""))
+    ev = {"event": "copy", "src": src, "src_path": spath, "dst": dst, "dst_path": dpath, "success": r.get("success"), "msg": msg}
+    record(ev, record_dir)
+    emit(ev)
+    return 0 if r.get("success") else EXIT_OTHER
+
+
 LOG_TAIL = 200
+SERVE_STAGE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\t|HALT[: ]|/dev/shm/b: OK$)")   # pod-start log()·boot HALT·SB 대조
 _RESULT_URL = re.compile(r"https://([a-z0-9-]{1,63}\.)+[a-z]{2,24}/[^\s\\\"'<>]{0,2000}")
 _LOG_SECRETS = [
     (re.compile(r"tskey-[A-Za-z0-9_\-]+"), "<가림>"),                                         # Tailscale 인증 키
@@ -1038,8 +1300,16 @@ def do_logs(key: str, cfg: dict, instance_id: int, daemon: bool = False) -> int:
         raise Stop(f"로그 주소를 못 받았다: {scrub(str(r.get('msg') or r.get('error') or '')[:200])}", EXIT_OTHER)
     text = fetch_result(str(url))
     lines = [l for l in text.splitlines() if l.strip()][-LOG_TAIL:]
-    say(f"{'데몬' if daemon else '컨테이너'} 로그 끝 {len(lines)}줄 — instance {instance_id}({role_of(cfg, hit[0].get('label')) or '?'}, "
-        f"{hit[0].get('actual_status')}). 비밀 꼴은 <가림>")
+    role = role_of(cfg, hit[0].get("label"))
+    hidden = 0
+    if role == "serve" and not daemon:
+        # 실사용 서빙의 컨테이너 로그에는 vLLM 출력(거른 판)도 섞이므로 시작 단계 줄(pod-log.tsv 와 같은
+        # "시각<TAB>글" 줄)과 boot 의 HALT 줄만 보인다. 대화 글이 들어올 수 있는 그 밖의 줄은 내지 않는다(데몬 로그는 그대로)
+        keep = [l for l in lines if SERVE_STAGE.match(l)]
+        hidden, lines = len(lines) - len(keep), keep
+    say(f"{'데몬' if daemon else '컨테이너'} 로그 끝 {len(lines)}줄 — instance {instance_id}({role or '?'}, "
+        f"{hit[0].get('actual_status')}). 비밀 꼴은 <가림>"
+        + (f". serve: 시작 단계 줄만, 그 밖 {hidden}줄은 내지 않음(사용자 대화 보호)" if role == "serve" and not daemon else ""))
     for l in lines:
         sys.stdout.write(scrub_log(l, key)[:2000] + "\n")
     sys.stdout.flush()
@@ -1786,7 +2056,7 @@ CLEAN_ENV = {"PATH": "/usr/bin:/bin", "HOME": HOME_DIR}
 
 def clean_environ() -> None:
     """부른 쪽 환경 변수를 모두 버린다(ssl·urllib 를 쓰기 전에). 진입 스크립트의 env -i 를 --clean-env 로 비켜 불러도
-    SSL_CERT_FILE·SSL_CERT_DIR(가짜 CA)·HTTPS_PROXY 같은 값이 남지 않게 한다. -I 는 PYTHON* 만 무시한다(메인 검토 11/8 14:1x)."""
+    SSL_CERT_FILE·SSL_CERT_DIR(가짜 CA)·HTTPS_PROXY 같은 값이 남지 않게 한다. -I 는 PYTHON* 만 무시한다."""
     os.environ.clear()
     os.environ.update(CLEAN_ENV)
 
@@ -1805,6 +2075,10 @@ def main(argv: list | None = None, key_fn=read_key, config_path: str = CONFIG, r
         cmd, args = parse_args(argv, cfg)
         if cmd == "up":                     # 상태 파일이 틀렸으면 키를 읽거나 API 를 부르기 전에 멈춘다
             current_template(load_state(state_dir), args[0])
+        elif cmd == "retemplate":
+            load_state(state_dir)
+        elif cmd == "up-keep":
+            current_template(load_state(state_dir), args[0])
         elif cmd in ("publish", "templates"):
             load_state(state_dir)
         facts = None
@@ -1819,11 +2093,21 @@ def main(argv: list | None = None, key_fn=read_key, config_path: str = CONFIG, r
             return do_logs(key, cfg, args[0], args[1])
         if cmd == "down":
             return do_down(key, cfg, args[0], record_dir)
+        if cmd in ("start", "stop"):
+            return do_state(key, cfg, args[0], "running" if cmd == "start" else "stopped", record_dir)
+        if cmd == "copy":
+            return do_copy(key, cfg, args[0], args[1], args[2], args[3], record_dir)
         tkey = tkey_fn() or key
         if cmd == "up":
             return do_up(key, cfg, args[0], args[1], args[2], record_dir, plan=args[3], tkey=tkey, state_dir=state_dir)
+        if cmd == "up-keep":
+            return do_up(key, cfg, args[0], args[1], args[2], record_dir, tkey=tkey, state_dir=state_dir, keep=True, disk=args[3])
         if cmd == "templates":
             return do_templates(tkey, state_dir)
+        if cmd == "retemplate":
+            return do_retemplate(key, tkey, cfg, args[0], record_dir, state_dir)
+        if cmd == "balance":                # 사용자 정보는 user_read 가 있는 템플릿 키로(없으면 기본 키 — 403 이면 권한을 더한다)
+            return do_balance(tkey, key, cfg)
         return do_publish(tkey, gh_fn(), args[0], args[1], args[2], facts, record_dir, state_dir, labs)
     except Stop as e:
         sys.stderr.write(f"{PROG}: 중단 — {e}\n")

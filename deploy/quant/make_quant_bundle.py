@@ -23,9 +23,9 @@ import tarfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-FILES = ["run-convert.sh", "st_io.py", "pad_intermediate.py", "graft_missing.py", "quantize_autoround.py", "kl_check.py",
+FILES = ["run-convert.sh", "st_io.py", "pad_intermediate.py", "pad_check.py", "graft_missing.py", "quantize_autoround.py", "kl_check.py",
          "quantsrv.py", "build_export.py", "audit_delta.py", "spec_metrics.py", "requirements-quant.txt", "image-8cf642e.sha256",
-         "pins/quality-data.sha256"]          # 대상별 원본 pins 는 서빙 표의 quant_src 에서(targets.json 과 함께)
+         "pins/quality-data.sha256", "manual-export.sh", "manual-continue.sh"]   # 대상별 원본 pins 는 서빙 표의 quant_src 에서(targets.json 과 함께)
 EXTRA = {"quality_battery.py": HERE.parent / "serving" / "bench" / "quality_battery.py"}
 ARGS_MAX, OPTIONS_MAX = 256, 4096
 BOOT = HERE / "boot-quant.sh"
@@ -61,7 +61,8 @@ def make_args(sha: str) -> str:
 
 
 def options(gist_raw_url: str, sha: str) -> str:
-    return f"-e PU={gist_raw_url} -e PS={sha} -e SB={boot_b64()}"
+    """v13.1: -p 70000:70000/udp — tailscaled 고정 UDP 포트(Vast 가 안팎 같은 번호를 VAST_UDP_PORT_70000 으로 준다)."""
+    return f"-e PU={gist_raw_url} -e PS={sha} -e SB={boot_b64()} -p 70000:70000/udp"
 
 
 ARGS = make_args(boot_sha())
@@ -93,6 +94,8 @@ def targets() -> dict:
 
 def contents() -> dict[str, bytes]:
     out = {f: (HERE / f).read_bytes() for f in FILES}
+    if (HERE / "resume.json").exists():               # 이어 하기 판(run-convert 가 복사된 결과를 대조해 옮기고 이어 한다)
+        out["resume.json"] = (HERE / "resume.json").read_bytes()
     out |= {k: v.read_bytes() for k, v in EXTRA.items()}
     tg = targets()
     for x in tg["targets"]:

@@ -243,6 +243,41 @@ GPU_FIELDS = ["memory.used", "memory.total", "utilization.gpu", "power.draw", "p
 
 
 GPU_SAMPLE_S, GPU_TSV_S = 60, 300   # /status 표본은 1분마다(평가기 GpuSampler 도 1분), 파일 기록은 5분마다
+SPEC_TSV_S = 60                     # T35(H5): 차선별 추측 디코딩 누계를 1분마다(바뀐 차선만) spec-log.tsv 에
+
+
+def plan_rows(state_dir: str) -> dict[int, tuple[str, str]]:
+    """$S/lanes/plan.txt("k 포트 카드 별칭 어댑터 quality") → {k: (별칭, 어댑터)}. 없으면 빈 것."""
+    out = {}
+    try:
+        for ln in open(os.path.join(state_dir, "lanes", "plan.txt"), encoding="utf-8"):
+            f = ln.split()
+            if len(f) >= 5 and f[0].isdigit():
+                out[int(f[0])] = (f[3], f[4])
+    except OSError:
+        pass
+    return out
+
+
+def spec_tsv(state_dir: str, st: list[dict], rows: dict, last: dict, ts: str) -> int:
+    """차선 = vLLM 프로세스 하나. 그 차선의 누계(서버가 뜬 뒤부터)가 바뀌었으면 한 줄:
+    시각 차선 별칭 어댑터 drafts draft_tokens accepted_tokens per_pos(쉼표, 자리별 수락 비율). 조각(칸) 하나의 값은 그 조각의
+    시작·끝 시각 앞뒤 줄의 차로 낸다(평가 runner.log 의 시각). 서버가 다시 뜨면 누계가 0 부터 — 줄어든 줄이 그 경계다."""
+    n = 0
+    with open(os.path.join(state_dir, "spec-log.tsv"), "a", encoding="utf-8") as f:
+        for s in st:
+            sd = s.get("spec_decode")
+            if not sd:
+                continue
+            key = (sd["drafts"], sd["draft_tokens"], sd["accepted_tokens"])
+            if last.get(s["k"]) == key:
+                continue
+            last[s["k"]] = key
+            al, ad = rows.get(s["k"], ("?", "?"))
+            pp = ",".join("" if v is None else str(v) for v in sd.get("per_pos") or [])
+            f.write(f"{ts}\t{s['k']}\t{al}\t{ad}\t{key[0]}\t{key[1]}\t{key[2]}\t{pp}\n")
+            n += 1
+    return n
 
 
 def gpu_samples() -> list[str] | None:
@@ -841,7 +876,7 @@ def main() -> int:
                      f"lane_boot={a.lane_boot_min}m max={a.max_hours}h")
     halt_at = None
     gpus: dict = {"v": None, "t": None}
-    t_gpu, t_tsv = -1e9, -1e9
+    t_gpu, t_tsv, t_spec, spec_last = -1e9, -1e9, -1e9, {}
     stop_failed: dict = {}
     if a.status_port and not a.once:
         for k in range(a.lanes):
@@ -865,6 +900,13 @@ def main() -> int:
             lanes.hold()                                    # 차선 기동 상한도(T28)
         ms = [fetch(f"http://127.0.0.1:{lane_port(k)}/metrics") for k in range(a.lanes)]
         lanes.observe_metrics(ms)
+        if time.monotonic() - t_spec >= SPEC_TSV_S:
+            t_spec = time.monotonic()
+            try:
+                spec_tsv(a.state_dir, lanes.st, plan_rows(a.state_dir), spec_last,
+                         datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+            except Exception as e:      # 기록이 감시(자동 정지)를 멈추게 하지 않는다
+                log(a.state_dir, f"spec-log 오류: {type(e).__name__}")
         try:
             lanes.check()
         except Exception as e:      # 차선 확인이 감시(자동 정지)를 멈추게 하지 않는다

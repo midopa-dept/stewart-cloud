@@ -37,10 +37,20 @@ CHUNK = 1 << 20
 
 
 class Ctx:
-    def __init__(self, q: Path, server_ip: str, ts_cmd: list[str] | None):
+    def __init__(self, q: Path, server_ip: str, ts_cmd: list[str] | None, log: Path | None = None):
         self.q, self.server_ip, self.ts_cmd = q, server_ip, ts_cmd
+        self.log = log or q / "convert-log.tsv"
         self.logged_out = False
         self.lock = threading.Lock()
+        self._active = 0.0
+        self.last_served: list[str] = []           # 마지막 GET /export 가 보인 세트(POST /export/done 이 이것을 받음으로 적는다)
+
+    def touch_active(self, every: float = 15.0) -> None:
+        """받는 중 표시(q/export-active 의 mtime). run-convert 의 받기 대기가 이것을 보고 정지를 미룬다."""
+        now = time.time()
+        if now - self._active >= every:
+            self._active = now
+            (self.q / "export-active").touch()
 
     def status(self) -> dict:
         root = self.q / "done"
@@ -51,16 +61,33 @@ class Ctx:
         for d in sorted(p for p in root.glob("*") if p.is_dir()):
             ds = sorted((p.name for p in d.glob("*")), key=lambda n: STAGES.index(n) if n in STAGES else 99)
             targets[d.name] = next((s for s in reversed(STAGES) if s in ds), ds[-1] if ds else None)
-        log = self.q / "convert-log.tsv"
+        log = self.log
         tail = log.read_text(errors="replace").splitlines()[-10:] if log.exists() else []
         return {"role": "quant", "instance_id": os.environ.get("CONTAINER_ID"), "label": os.environ.get("VAST_CONTAINERLABEL"),
                 "stage": stage, "done": done, "targets": targets, "halted": any("HALT:" in ln for ln in tail),
                 "log_tail": [ln[:300] for ln in tail], "export_ready": (self.q / "export.json").exists(),
+                "acknowledged": self.acknowledged(),
                 "exported": (self.q / "done" / "exported").exists(), "model_fetch": None, "updated": round(time.time())}
 
     def export_index(self) -> dict | None:
         p = self.q / "export.json"
         return json.loads(p.read_text()) if p.exists() else None
+
+    def acknowledged(self) -> list[str]:
+        try:
+            got = json.loads((self.q / "done" / "exported-sets.json").read_text())
+            return [str(x) for x in got] if isinstance(got, list) else []
+        except (OSError, ValueError):
+            return []
+
+    def pending_index(self) -> dict | None:
+        """집이 아직 받았다고 알리지 않은 세트만 보이는 export.json(없으면 None). 끝난 대상부터 두 번 이상 나눠 받게."""
+        idx = self.export_index()
+        if not idx:
+            return None
+        got = set(self.acknowledged())
+        sets = [s for s in idx.get("sets", []) if s.get("alias") not in got]
+        return dict(idx, sets=sets) if sets else None
 
 
 class Base(BaseHTTPRequestHandler):
@@ -112,7 +139,12 @@ class ExportH(Base):
             return
         idx = self.ctx.export_index()
         if self.path == "/export":
-            return self._json(200, idx) if idx else self._json(409, {"error": "아직 내보낼 것이 없다", "stage": self.ctx.status()["stage"]})
+            pend = self.ctx.pending_index()
+            if not pend:
+                return self._json(409, {"error": "아직 내보낼 것이 없다(또는 다 받았다)", "stage": self.ctx.status()["stage"]})
+            with self.ctx.lock:
+                self.ctx.last_served = [s["alias"] for s in pend["sets"]]
+            return self._json(200, pend)
         m = re.fullmatch(r"/export/([^/]+)/([^/]+)", self.path)
         if not m or not idx:
             return self._json(404, {"error": "없는 경로"})
@@ -124,23 +156,43 @@ class ExportH(Base):
         p = self.ctx.q / st["dir"] / name
         if not p.is_file() or p.stat().st_size != f["size"]:
             return self._json(500, {"error": "파일이 목록과 다르다"})
-        self.send_response(200)
+        # v13.1: 이어 받기 — "Range: bytes=N-" 하나만 받는다(206). 그 밖의 Range 꼴은 무시하고 통째(200)
+        start, size = 0, f["size"]
+        m = re.fullmatch(r"bytes=(\d{1,15})-", self.headers.get("Range") or "")
+        if m and 0 < int(m.group(1)) < size:
+            start = int(m.group(1))
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{size - 1}/{size}")
+        else:
+            self.send_response(200)
+        self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(f["size"]))
+        self.send_header("Content-Length", str(size - start))
         self.end_headers()
+        self.ctx.touch_active(every=0)
         with open(p, "rb") as fh:
+            fh.seek(start)
             for b in iter(lambda: fh.read(CHUNK), b""):
                 self.wfile.write(b)
+                self.ctx.touch_active()
 
     def do_POST(self):
         if not self._peer_ok():
             return
         if self.path != "/export/done":
             return self._json(404, {"error": "없는 경로"})
-        if not self.ctx.export_index():
-            return self._json(409, {"error": "아직 내보낼 것이 없다"})
-        (self.ctx.q / "done" / "exported").touch()
-        self._json(200, {"ok": True})
+        idx = self.ctx.export_index()
+        if not idx or not self.ctx.last_served:
+            return self._json(409, {"error": "아직 내보낼 것이 없다(GET /export 먼저)"})
+        with self.ctx.lock:
+            got = sorted(set(self.ctx.acknowledged()) | set(self.ctx.last_served))
+            p = self.ctx.q / "done" / "exported-sets.json"
+            p.with_suffix(".tmp").write_text(json.dumps(got))
+            p.with_suffix(".tmp").replace(p)
+            self.ctx.last_served = []
+            if all(s["alias"] in got for s in idx.get("sets", [])):
+                (self.ctx.q / "done" / "exported").touch()       # 지금 열린 세트를 다 받았다(옛 꼴 읽는 쪽)
+        self._json(200, {"ok": True, "acknowledged": got})
 
 
 def serve(ctx: Ctx, listen: str, status_port: int, export_port: int) -> list[ThreadingHTTPServer]:
@@ -162,8 +214,9 @@ def main(argv=None) -> int:
     ap.add_argument("--export-port", type=int, default=8090)
     ap.add_argument("--listen", default="127.0.0.1")
     ap.add_argument("--ts-cmd", default="")
+    ap.add_argument("--log", default=None, help="상태의 로그 꼬리(없으면 <q>/convert-log.tsv)")
     a = ap.parse_args(argv)
-    ctx = Ctx(Path(a.q), a.server_ip, shlex.split(a.ts_cmd) if a.ts_cmd else None)
+    ctx = Ctx(Path(a.q), a.server_ip, shlex.split(a.ts_cmd) if a.ts_cmd else None, Path(a.log) if a.log else None)
     serve(ctx, a.listen, a.status_port, a.export_port)
     while True:
         time.sleep(3600)

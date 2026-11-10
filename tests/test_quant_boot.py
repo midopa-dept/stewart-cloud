@@ -130,7 +130,7 @@ class TQuantBoot(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         fakes(d)
         part = part.replace("/dev/shm", str(d))
-        script = ("set -euo pipefail\n" + part.replace('Q=${Q:-/workspace/quant}', f"Q={d}/q")
+        script = (f"set -euo pipefail\nSHM={d} APP={d}/app\n" + part.replace('Q=${Q:-/workspace/quant}', f"Q={d}/q")
                   .replace("HERE=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"", f"HERE={d}")
                   + "\nfalse\necho NOT-REACHED\n")                                  # 아무 명령 실패 → ERR trap → halt
         r = subprocess.run(["bash", "-c", script], env={"PATH": f"{d}/bin:/usr/bin:/bin", "CONTAINER_ID": "4242",
@@ -174,7 +174,8 @@ class TQuantBoot(unittest.TestCase):
         opts = MB.options("<gist raw 주소>", "a" * 64)
         self.assertLessEqual(len(opts), MB.OPTIONS_MAX)
         self.assertTrue(opts.startswith("-e PU=<gist raw 주소> -e PS=" + "a" * 64 + " -e SB="))
-        sb = base64.b64decode(opts.split("-e SB=")[1])
+        sb = base64.b64decode(opts.split("-e SB=")[1].split()[0])
+        self.assertTrue(opts.endswith(" -p 70000:70000/udp"))                 # v13.1: tailscaled 고정 UDP 포트
         self.assertEqual(hashlib.sha256(sb).hexdigest(), MB.boot_sha())
         self.assertNotIn(b"\n#", sb)                                          # 주석은 빠졌다
         txt = (ROOT / "boot-quant.sh").read_text()
