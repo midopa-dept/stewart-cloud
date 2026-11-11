@@ -26,6 +26,7 @@ import os
 import sys
 import threading
 import time
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -35,6 +36,16 @@ import serving as SV  # noqa: E402
 
 CHUNK = 1 << 20
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+
+
+class QuickHTTPServer(ThreadingHTTPServer):
+    """server_bind 가 부르는 socket.getfqdn(역방향 DNS)을 건너뛴다 — 느린 기계(macOS CI)에서 서버 하나에 수십 초가 걸려
+    bind 와 listen 사이에 붙은 요청이 기다렸다. server_name 은 주소 그대로다(이 서버들은 그 값을 쓰지 않는다)."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = str(host), port
 
 
 def file_sha(p: Path) -> str:
@@ -211,7 +222,7 @@ def run(alias: str, files: list[dict], d: Path, server_ip: str, port: int, timeo
         st.write_status(force=True)
         return 0
     stop = threading.Event()
-    srv = ThreadingHTTPServer((listen, port), make_handler(st, server_ip, stop))
+    srv = QuickHTTPServer((listen, port), make_handler(st, server_ip, stop))
     srv.daemon_threads = True
     t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
     t.start()

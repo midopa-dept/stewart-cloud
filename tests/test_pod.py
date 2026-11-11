@@ -13,6 +13,16 @@ import unittest
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import socketserver
+
+
+class QuickHTTPServer(ThreadingHTTPServer):
+    """시험 서버도 server_bind 의 socket.getfqdn(macOS CI 에서 수십 초)을 건너뛴다(deploy 의 QuickHTTPServer 와 같다)."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = str(self.server_address[0]), self.server_address[1]
+
 
 from tests import FIX_ROOT, LOCAL
 from unittest import mock
@@ -37,7 +47,7 @@ class TIdleStop(unittest.TestCase):
 
             def log_message(self, *a):
                 pass
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        srv = QuickHTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.shutdown)
         port = srv.server_address[1]
@@ -445,7 +455,10 @@ class TPodLanes(unittest.TestCase):
         "    def log_message(self, *a): pass\n"
         "    def do_GET(self):\n"
         "        self.send_response(200); self.end_headers(); self.wfile.write(b'ok')\n"
-        "srv = http.server.ThreadingHTTPServer(('127.0.0.1', port), H)\n"
+        "class S(http.server.ThreadingHTTPServer):\n"
+        "    def server_bind(self):\n"
+        "        import socketserver; socketserver.TCPServer.server_bind(self); self.server_name, self.server_port = '127.0.0.1', self.server_address[1]\n"
+        "srv = S(('127.0.0.1', port), H)\n"
         "threading.Thread(target=srv.serve_forever, daemon=True).start()\n"
         "time.sleep(0.3); print('INFO Model loading took 15.2 GiB memory', flush=True)\n"
         "time.sleep(float(os.environ.get('LIFE', '5')))\n")
@@ -1016,7 +1029,7 @@ class TIdleStopLanes(unittest.TestCase):
             def do_POST(self):
                 seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 self._j({"choices": [{"message": {"content": " ok "}}]})
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        srv = QuickHTTPServer(("127.0.0.1", 0), H)
         th.Thread(target=srv.serve_forever, daemon=True).start()
         try:
             r = self.m.smoke(srv.server_address[1], timeout=5)

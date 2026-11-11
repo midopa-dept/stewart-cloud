@@ -195,3 +195,27 @@ class TRecv(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TQuickServer(unittest.TestCase):
+    """macOS CI: HTTPServer.server_bind 의 socket.getfqdn(역방향 DNS)이 서버 하나에 약 35초 걸려 시험이 20분 상한을 넘었다.
+    파드 서버 셋(modelrecv·quantsrv·idle_stop)의 QuickHTTPServer 는 그것을 부르지 않는다."""
+
+    def test_no_getfqdn(self):
+        from unittest import mock
+        mods = [_load("modelrecv")]
+        for name, rel in (("quantsrv", "deploy/quant/quantsrv.py"), ("idle_stop", "deploy/vast/idle_stop.py")):
+            spec = importlib.util.spec_from_file_location(name, FIX_ROOT / rel)
+            m = importlib.util.module_from_spec(spec)
+            sys.modules[name] = m
+            spec.loader.exec_module(m)
+            mods.append(m)
+        from http.server import BaseHTTPRequestHandler
+        with mock.patch("socket.getfqdn", side_effect=AssertionError("getfqdn 을 불렀다")):
+            for m in mods:
+                srv = m.QuickHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+                try:
+                    self.assertEqual(srv.server_name, "127.0.0.1", m.__name__)
+                    self.assertEqual(srv.server_port, srv.server_address[1])
+                finally:
+                    srv.server_close()

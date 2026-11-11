@@ -38,6 +38,7 @@ import signal
 import subprocess
 import threading
 import time
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
 import urllib.request
@@ -49,6 +50,16 @@ BUSY = ("vllm:num_requests_running", "vllm:num_requests_waiting")
 
 SPEC_POS = "vllm:spec_decode_num_accepted_tokens_per_pos_total"
 _POS = re.compile(r'position="([0-9]{1,2})"')
+
+
+class QuickHTTPServer(ThreadingHTTPServer):
+    """server_bind 가 부르는 socket.getfqdn(역방향 DNS)을 건너뛴다 — 느린 기계(macOS CI)에서 서버 하나에 수십 초가 걸려
+    bind 와 listen 사이에 붙은 요청이 기다렸다. server_name 은 주소 그대로다(이 서버들은 그 값을 쓰지 않는다)."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name, self.server_port = str(host), port
 
 
 def parse_metrics(text: str) -> dict[str, float]:
@@ -846,7 +857,7 @@ def serve_status(port: int, get, on_logout=None) -> ThreadingHTTPServer:
             self.end_headers()
             self.wfile.write(b)
 
-    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    srv = QuickHTTPServer(("127.0.0.1", port), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 

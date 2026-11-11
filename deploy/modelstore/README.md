@@ -9,7 +9,7 @@
 ## 흐름(E)
 
 1. `stewart-cloud up quant …`(②)
-   - 변환 인스턴스가 테일넷 `stewart-quant` 로 들어와 `deploy/quant/run-convert.sh` 0~11단계를 돕니다.
+   - 변환 인스턴스가 테일넷 `stewart-quant` 로 들어와 `deploy/quant/run-convert.sh` 0–11단계를 돕니다.
    - 상태는 `:8001/status`, 내보내기는 `:8090` 입니다.
 2. (집) 끌어오기: `sudo modelstore pull stewart-quant.tail-example.ts.net` → `/srv/models/incoming/<시각>-stewart-quant/`
    - 세트별 폴더와 `export.json` 이 생깁니다.
