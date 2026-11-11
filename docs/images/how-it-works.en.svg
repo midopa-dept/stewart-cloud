@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 520" width="400" height="520">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#57606a"/></marker></defs>
+<rect x="0" y="0" width="400" height="520" rx="12" fill="#ffffff"/>
+<rect x="16" y="16" width="220" height="40" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="1.5"/>
+<text x="126.0" y="41.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#1f2328">stewart-cloud up</text>
+<path d="M126 56 L126 82" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ah)"/>
+<rect x="16" y="84" width="220" height="40" rx="8" fill="#ffffff" stroke="#57606a" stroke-width="1.5"/>
+<text x="126.0" y="109.2" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2328">Join the tailnet</text>
+<path d="M126 124 L126 150" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ah)"/>
+<rect x="16" y="152" width="220" height="54" rx="8" fill="#fff8c5" stroke="#57606a" stroke-width="1.5"/>
+<text x="126.0" y="174.2" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2328">Download the model</text>
+<text x="126.0" y="194.2" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#57606a">check revision, sha256</text>
+<path d="M126 206 L126 232" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ah)"/>
+<rect x="16" y="234" width="220" height="40" rx="8" fill="#ddf4ff" stroke="#57606a" stroke-width="1.5"/>
+<text x="126.0" y="259.2" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2328">Serve with vLLM</text>
+<path d="M126 274 L126 300" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ah)"/>
+<rect x="16" y="302" width="220" height="40" rx="8" fill="#dafbe1" stroke="#57606a" stroke-width="1.5"/>
+<text x="126.0" y="327.2" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2328">Connect stewart</text>
+<path d="M126 342 L126 368" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ah)"/>
+<rect x="16" y="370" width="220" height="40" rx="8" fill="#ffffff" stroke="#57606a" stroke-width="1.5"/>
+<text x="126.0" y="395.2" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2328">Stop itself when idle</text>
+<path d="M126 410 L126 436" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ah)"/>
+<rect x="16" y="438" width="220" height="40" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="1.5"/>
+<text x="126.0" y="463.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="600" fill="#1f2328">stewart-cloud down</text>
+<path d="M236 36 L324 36 L324 150" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ah)" stroke-dasharray="5 4"/>
+<text x="330" y="70" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#57606a">up quant</text>
+<text x="330" y="88" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="12" fill="#57606a">optional</text>
+<rect x="262" y="152" width="124" height="54" rx="8" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="324.0" y="183.9" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1f2328">Convert to 4-bit</text>
+<path d="M324 206 L324 232" fill="none" stroke="#57606a" stroke-width="1.5" marker-end="url(#ah)" stroke-dasharray="5 4"/>
+<rect x="262" y="234" width="124" height="54" rx="8" fill="#ffffff" stroke="#57606a" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="324.0" y="256.4" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1f2328">Pull into your</text>
+<text x="324.0" y="275.4" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#57606a">storage server</text>
+</svg>

@@ -17,17 +17,7 @@ Python · Vast.ai · vLLM · Tailscale · macOS
 
 한국어 · [English](README.en.md) · [stewart](https://github.com/midopa-dept/stewart)
 
-```mermaid
-flowchart LR
-    up["stewart-cloud up"] --> ts["Tailscale 망 합류"]
-    ts --> fetch["모델 받기<br/>리비전·sha256 대조"]
-    fetch --> serve["vLLM 서빙"]
-    serve --> st["stewart 연결"]
-    st --> idle["놀면 스스로 정지"]
-    idle --> down["stewart-cloud down"]
-    up -. "up quant" .-> quant["4비트 변환"]
-    quant -.-> store["보관 서버로 끌어오기"]
-```
+![흐름: stewart-cloud up → Tailscale 망 합류 → 모델 받기(리비전·sha256 대조) → vLLM 서빙 → stewart 연결 → 놀면 스스로 정지 → stewart-cloud down, 선택으로 up quant → 4비트 변환 → 보관 서버로 끌어오기](docs/images/how-it-works.svg)
 
 내 GPU 없이, 인터넷에 포트를 열지 않고 큰 열린 모델을 몇 시간 쓰고 싶을 때 씁니다. 인스턴스가 돌리거나 받는 파일은 모두 해시로 고정되고, 인스턴스는 놀거나 부팅에 실패하면 스스로 멈춥니다. 그래서 끄는 것을 잊은 대여가 계속 돌지 않습니다. [stewart](https://github.com/midopa-dept/stewart) 를 위해 만들었지만, OpenAI 호환 클라이언트라면 무엇이든 이 서버를 쓸 수 있습니다.
 

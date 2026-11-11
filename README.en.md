@@ -15,17 +15,7 @@ Python · Vast.ai · vLLM · Tailscale · macOS
 
 [한국어](README.md) · English · [stewart](https://github.com/midopa-dept/stewart)
 
-```mermaid
-flowchart LR
-    up["stewart-cloud up"] --> ts["Join the tailnet"]
-    ts --> fetch["Download the model<br/>check revision and sha256"]
-    fetch --> serve["Serve with vLLM"]
-    serve --> st["Connect stewart"]
-    st --> idle["Stop itself when idle"]
-    idle --> down["stewart-cloud down"]
-    up -. "up quant" .-> quant["Convert to 4-bit"]
-    quant -.-> store["Pull into your storage server"]
-```
+![Flow: stewart-cloud up → join the tailnet → download the model (check revision, sha256) → serve with vLLM → connect stewart → stop itself when idle → stewart-cloud down; optionally up quant → convert to 4-bit → pull into your storage server](docs/images/how-it-works.en.svg)
 
 Use it when you want a large open model for a few hours without running your own GPU and without opening a port to the internet. Everything the instance runs or downloads is pinned by hash, and the instance stops itself when it sits idle or fails to boot, so a forgotten rental does not keep running. It was built for [stewart](https://github.com/midopa-dept/stewart), but any OpenAI-compatible client can use the server.
 
