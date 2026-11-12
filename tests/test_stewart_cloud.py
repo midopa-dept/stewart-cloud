@@ -18,6 +18,9 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+# 시험용 지어낸 Tailscale 키 꼴(가림 규칙 시험). 비밀 스캐너가 진짜 키로 잡지 않게 조각으로 잇는다(11-12 GitHub secret scanning 오탐)
+FAKE_TSKEY = "tskey" + "-auth-" + "kQ1-abcdef"
+
 HERE = Path(__file__).resolve().parents[1] / "stewart_cloud"
 spec = importlib.util.spec_from_file_location("stewart_cloud", HERE / "stewart_cloud.py")
 SC = importlib.util.module_from_spec(spec)
@@ -1000,7 +1003,7 @@ class Flows(Base):
     def test_logs(self):
         self.assertEqual(self.run_main("up", "102", "0.36")[0], 0)
         [i for i in self.fake.instances if i["id"] == 5555][0]["label"] = "stewart-eval-20261111-0000"   # serve 는 아래 따로
-        self.fake.log_text = ("boot\n\nHALT: pod files\nTS_AUTHKEY=tskey-auth-kQ1-abcdef curl https://gist.githubusercontent.com/u/x/raw/1/p\n"
+        self.fake.log_text = ("boot\n\nHALT: pod files\nTS_AUTHKEY=" + FAKE_TSKEY + " curl https://gist.githubusercontent.com/u/x/raw/1/p\n"
                               "Authorization: Bearer " + KEY + "\nsha 048d3b859fc68b3c746f38246e968370cc745230cb91b5c03fcd060e3c5f9c58  p: FAILED\n"
                               + "".join(f"line {n}\n" for n in range(300)))
         with mock.patch.object(SC.time, "sleep", lambda s: None):
@@ -1014,7 +1017,7 @@ class Flows(Base):
         self.assertIsNone(get[-1].get("auth"))                               # 로그 주소에는 키를 보내지 않는다
         self.assertEqual(len([l for l in out.splitlines() if l.startswith("line ")]), 200 - 0)   # 끝 200줄
         self.assertIn("line 299", out)
-        self.fake.log_text = "HALT: pod files\nTS_AUTHKEY=tskey-auth-kQ1-abcdef\ncurl https://gist.githubusercontent.com/u/x/raw/1/p\n" \
+        self.fake.log_text = "HALT: pod files\nTS_AUTHKEY=" + FAKE_TSKEY + "\ncurl https://gist.githubusercontent.com/u/x/raw/1/p\n" \
                              "Authorization: Bearer " + KEY + "\napi_key=zzz token=yyy\nsha 048d3b859fc68b3c746f38246e968370cc745230cb91b5c03fcd060e3c5f9c58  p: FAILED\n"
         self.fake.log_gets = 0
         with mock.patch.object(SC.time, "sleep", lambda s: None):
