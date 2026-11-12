@@ -1,9 +1,8 @@
 # 변환 인스턴스(HyperQwen 8cf642e 이미지 venv)에 더하는 것만. 이미지에 이미 있는 꾸러미는 빼고 이미지 판을 쓴다.
 # 이미지에 있던 판은 constraints 로 묶어 바뀌면 멈춘다. 단 pyarrow·fsspec 은 풀어 준다(datasets 5.0.1 이 pyarrow>=21, 이미지는 20.0.0 — run-convert.sh 1단계).
-# auto-round 0.14.2 = 모델 A(ababaka)의 카드에 적힌 판. 나머지는 auto-round 0.14.2(2026-07-13) 무렵 판(datasets 는 보안 고침 5.0.1, 11/12).
-# accelerate 1.14.0: CVE-2026-69112(GHSA-4j2p-28q2-5m79, 나눈 체크포인트 weight_map 경로 탈출) 고친 판이 아직 없다.
-#   변환은 targets.json 의 저장소를 커밋 revision 으로 고정해 받은 것만 읽는다(남이 준 체크포인트를 읽지 않는다). 고친 판이 나오면 올린다.
-accelerate==1.14.0
+# auto-round 0.14.2 = 모델 A(ababaka)의 카드에 적힌 판. 나머지는 auto-round 0.14.2(2026-07-13) 무렵 판(accelerate 1.15.0·datasets 5.0.1 은 보안 고침, 11/12).
+# accelerate 1.15.0 = CVE-2026-69112(GHSA-4j2p-28q2-5m79, 나눈 체크포인트 weight_map 경로 탈출, 1.14.0 이하) 밖의 첫 판(2026-09-09)
+accelerate==1.15.0
 datasets==5.0.1
 py-cpuinfo==9.0.0
 pydantic==2.13.4

@@ -415,7 +415,7 @@ class TBundle(unittest.TestCase):
         r = subprocess.run([sys.executable, "-", str(d / "c.txt"), str(ROOT / "requirements-quant.txt"), str(d / "p.txt"),
                             str(d / "s.txt"), "pyarrow fsspec"], input=sel, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual((d / "p.txt").read_text().split(), ["accelerate==1.14.0", "datasets==5.0.1"])   # 이미지의 pydantic·py-cpuinfo 는 뺌
+        self.assertEqual((d / "p.txt").read_text().split(), ["accelerate==1.15.0", "datasets==5.0.1"])   # 이미지의 pydantic·py-cpuinfo 는 뺌
         self.assertEqual((d / "s.txt").read_text().split(), ["pydantic==2.12.5", "torch==2.13.0", "Py_CpuInfo==8.0.0"])
         self.assertIn("image keeps py-cpuinfo,pydantic", r.stdout)
         (d / "after.txt").write_text("pydantic==2.12.5\ntorch==2.13.0\nPy_CpuInfo==8.0.0\npyarrow==21.0.0\nfsspec==2026.4.0\ndatasets==5.0.0\n")

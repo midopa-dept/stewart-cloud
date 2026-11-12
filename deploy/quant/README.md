@@ -32,7 +32,7 @@
 | 단계 | 하는 일 | 멈추는 조건 |
 |---|---|---|
 | 0 | 이미지 /app 파일(HyperQwen 8cf642e)·묶음 sha 대조 | 다르면 |
-| 1 | auto-round 0.14.2(휠 sha 대조)·accelerate 1.14.0·datasets 5.0.1·py-cpuinfo 9.0.0·pydantic 2.13.4 설치. 이미지 패키지 판은 constraints 로 묶음 | 이미지 판이 하나라도 바뀌면 |
+| 1 | auto-round 0.14.2(휠 sha 대조)·accelerate 1.15.0·datasets 5.0.1·py-cpuinfo 9.0.0·pydantic 2.13.4 설치. 이미지 패키지 판은 constraints 로 묶음 | 이미지 판이 하나라도 바뀌면 |
 | 3 | pile-10k@127bfed·품질 자료 3개(sha 대조), 그 뒤 오프라인. auto-round 의 load_dataset 이 오프라인으로 읽는지 먼저 확인 | 실패하면 |
 | 대상마다 2 | 원본 BF16 받기(리비전 고정, pins 대조). 받자마자 감사 쌍이 갖춰졌으면 감사 | sha 대조 실패 |
 | 대상마다 4·5 | (pad_to 가 있을 때만) `pad_intermediate.py --to <pad_to>`, 전후 KL(전체 어휘, wikitext-2 8×256) | 평균 KL > 1e-4 또는 top-1 < 99.9% |
