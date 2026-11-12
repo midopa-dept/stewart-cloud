@@ -3,8 +3,8 @@
 # auto-round 0.14.2 = 모델 A(ababaka)의 카드에 적힌 판. 나머지는 auto-round 0.14.2(2026-07-13) 무렵 판(datasets 는 보안 고침 5.0.1, 11/12).
 # accelerate 1.14.0: CVE-2026-69112(GHSA-4j2p-28q2-5m79, 나눈 체크포인트 weight_map 경로 탈출) 고친 판이 아직 없다.
 #   변환은 targets.json 의 저장소를 커밋 revision 으로 고정해 받은 것만 읽는다(남이 준 체크포인트를 읽지 않는다). 고친 판이 나오면 올린다.
-accelerate==1.14.0
-datasets==5.0.1
+accelerate==1.15.0
+datasets==5.2.0
 py-cpuinfo==9.0.0
 pydantic==2.13.4
 # auto-round 0.14.2 는 run-convert.sh 가 휠을 먼저 받아 sha256 4265c11d…ca24 를 대조한 뒤 그 파일로 깐다
